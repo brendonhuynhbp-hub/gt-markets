@@ -1,0 +1,373 @@
+import yfinance as yf
+import pandas as pd
+
+tickers = ["CL=F", "GC=F", "BTC-USD", "USDCNY=X"]
+
+df = yf.download(tickers, period="10y", interval="1d")["Close"]
+
+df.rename(columns={"CL=F":"USD to Oil","GC=F":"USD to Gold","BTC-USD": "USD to BTC","USDCNY=X": "USD to Chinese Yuan"},inplace=True)
+
+print (df.head())
+
+df.info()
+num_rows = len(df)
+print(f"Number of rows: {num_rows}")
+
+print(df.isna().sum())
+
+blank_rate = (df.isna().sum() / num_rows) * 100
+print("Blank Rate (%):")
+print(blank_rate)
+
+
+
+import matplotlib.pyplot as plt
+
+# Iterate through each column (ticker) and create a plot
+for column in df.columns:
+    plt.figure(figsize=(12, 6))  # Create a new figure for each plot
+    plt.plot(df.index, df[column])
+    plt.title(f'{column} Closing Price Over Time')
+    plt.xlabel('Date')
+    plt.ylabel('Closing Price')
+    plt.grid(True)
+    plt.show()
+
+for column in df.columns:
+    blank_dates = df[df[column].isna()].index
+    print(f"Blank dates for {column}:")
+    if not blank_dates.empty:
+        print(blank_dates)
+    else:
+        print("No blank dates for this ticker.")
+    print("-" * 30)
+
+df_edited = df.fillna(method='ffill')
+print("Previous day's closing prices:")
+print(df_edited.head())
+
+import matplotlib.pyplot as plt
+
+# Iterate through each column (ticker) and create a plot for the previous day's prices
+for column in df_edited.columns:
+    plt.figure(figsize=(12, 6))  # Create a new figure for each plot
+    plt.plot(df_edited.index, df_edited[column])
+    plt.title(f'{column} Previous Day Closing Price Over Time (Filled Data)')
+    plt.xlabel('Date')
+    plt.ylabel('Previous Day Closing Price')
+    plt.grid(True)
+    plt.show()
+
+df_analysis = df_edited.pct_change()
+
+print("Running change values (daily percentage change):")
+print(df_analysis.head())
+
+df_analysis.dropna(inplace=True)
+print("df_analysis after dropping NaNs:")
+display(df_analysis.head())
+
+df_analysis_percentage = (df_analysis * 100).round(4)
+print("Daily percentage change (rounded to 4 decimal places):")
+display(df_analysis_percentage.head())
+
+import ipywidgets as widgets
+from IPython.display import display
+import matplotlib.pyplot as plt
+from datetime import timedelta
+
+# Create a dropdown for ticker selection
+ticker_dropdown = widgets.Dropdown(
+    options=df_edited.columns,
+    description='Select Ticker:',
+    disabled=False,
+)
+
+# Create date pickers for start and end dates
+date_start = widgets.DatePicker(
+    description='Start Date',
+    disabled=False,
+    value=df_edited.index.min()
+)
+
+date_end = widgets.DatePicker(
+    description='End Date',
+    disabled=False,
+    value=df_edited.index.max()
+)
+
+# Create a button to trigger display
+display_button = widgets.Button(
+    description='Display Data',
+    disabled=False,
+    button_style='', # 'success', 'info', 'warning', 'danger' or ''
+    tooltip='Click to display data for selected ticker and date range',
+    icon='check' # (FontAwesome icons: https://fontawesome.com/icons)
+)
+
+# Create an output widget to display results
+output = widgets.Output()
+
+def filter_data(ticker, start_date, end_date, df_edited, df_analysis_percentage):
+    """
+    Filters the df_edited and df_analysis_percentage DataFrames based on the selected ticker and date range.
+
+    Args:
+        ticker (str): The selected ticker.
+        start_date (datetime): The start date for filtering.
+        end_date (datetime): The end date for filtering.
+        df_edited (pd.DataFrame): The DataFrame with filled missing values.
+        df_analysis_percentage (pd.DataFrame): The DataFrame with daily percentage changes.
+
+    Returns:
+        tuple: A tuple containing the filtered df_edited and df_analysis_percentage DataFrames.
+    """
+    filtered_edited_df = df_edited.loc[start_date:end_date, [ticker]]
+    filtered_analysis_df = df_analysis_percentage.loc[start_date:end_date, [ticker]]
+    return filtered_edited_df, filtered_analysis_df
+
+def extract_ticker_info(ticker, start_date, end_date, filtered_edited_df, filtered_analysis_df):
+    """
+    Extracts ticker information for the selected date range.
+
+    Args:
+        ticker (str): The selected ticker.
+        start_date (datetime): The start date of the selected range.
+        end_date (datetime): The end date of the selected range.
+        filtered_edited_df (pd.DataFrame): The filtered df_edited DataFrame.
+        filtered_analysis_df (pd.DataFrame): The filtered df_analysis_percentage DataFrame.
+
+    Returns:
+        tuple: A tuple containing the extracted date range (as a string), current value, and daily change.
+    """
+    date_range_str = f"{start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}"
+    current_value = filtered_edited_df.iloc[-1][ticker]
+    daily_change = filtered_analysis_df.iloc[-1][ticker]
+    return date_range_str, current_value, daily_change
+
+def display_ticker_info(ticker, start_date, end_date, filtered_edited_df, filtered_analysis_df):
+    """
+    Extracts and displays ticker information for the selected date range.
+
+    Args:
+        ticker (str): The selected ticker.
+        start_date (datetime): The start date of the selected range.
+        end_date (datetime): The end date of the selected range.
+        filtered_edited_df (pd.DataFrame): The filtered df_edited DataFrame.
+        filtered_analysis_df (pd.DataFrame): The filtered df_analysis_percentage DataFrame.
+    """
+    date_range_str, current_value, daily_change = extract_ticker_info(ticker, start_date, end_date, filtered_edited_df, filtered_analysis_df)
+
+    # Format and display the information
+    print(f"Ticker: {ticker}")
+    print(f"Date Range: {date_range_str}")
+    print(f"Current Value ({end_date.strftime('%Y-%m-%d')}): {current_value:.4f}")
+    print(f"Daily Change ({end_date.strftime('%Y-%m-%d')}): {daily_change:.4f}%")
+
+
+def on_display_button_clicked(b):
+    with output:
+        output.clear_output()
+        ticker = ticker_dropdown.value
+        start_date = date_start.value
+        end_date = date_end.value
+
+        if start_date > end_date:
+            print("Error: Start date cannot be after end date.")
+            return
+
+        filtered_edited_df, filtered_analysis_df = filter_data(ticker, start_date, end_date, df_edited, df_analysis_percentage)
+
+        if (end_date - start_date) > timedelta(days=0):
+            # Plot for date ranges longer than one day
+            plt.figure(figsize=(12, 6))
+            plt.plot(filtered_edited_df.index, filtered_edited_df[ticker])
+            plt.title(f'{ticker} Closing Price from {start_date.strftime("%Y-%m-%d")} to {end_date.strftime("%Y-%m-%d")}')
+            plt.xlabel('Date')
+            plt.ylabel('Closing Price')
+            plt.grid(True)
+            plt.show()
+
+            # Display info for the last day of the range
+            display_ticker_info(ticker, start_date, end_date, filtered_edited_df, filtered_analysis_df)
+
+        else:
+            # Display info for a single day
+            display_ticker_info(ticker, start_date, end_date, filtered_edited_df, filtered_analysis_df)
+
+
+display_button.on_click(on_display_button_clicked)
+
+# Display the widgets
+display(ticker_dropdown, date_start, date_end, display_button, output)
+
+!pip install pytrends
+from pytrends.request import TrendReq
+import ipywidgets as widgets
+from IPython.display import display
+
+def get_keywords_for_ticker(ticker_name):
+    keyword_map = {
+        "USD to BTC": ["Bitcoin", "BTC price"],
+        "USD to Oil": ["Crude oil price", "Oil price"],
+        "USD to Gold": ["Gold price", "Buy gold"],
+        "USD to Chinese Yuan": ["Chinese Yuan", "USD CNY exchange rate"]
+    }
+    return keyword_map.get(ticker_name, [])
+
+selected_ticker = ticker_dropdown.value
+
+keywords = get_keywords_for_ticker(selected_ticker)
+
+print(f"Selected Ticker: {selected_ticker}")
+print(f"Suggested Keywords for Google Trends: {keywords}")
+
+from pytrends.request import TrendReq
+import pandas as pd # Import pandas if not already imported in this cell
+
+# Initialize TrendReq
+pytrends = TrendReq(hl='en-US', tz=360)
+
+# Define a comprehensive list of keywords for Google Trends search covering all tickers
+keywords = ["USD", "Bitcoin", "Crude oil price", "Oil price", "Gold price", "Buy gold", "Chinese Yuan", "USD CNY exchange rate"]
+
+# Define a timeframe that covers your dates of interest.
+# You might need to adjust this timeframe based on the range of dates in summary_df_selected.
+# For example, using the min and max dates from summary_df_selected.
+
+# Check if summary_df_selected is defined and not empty
+if 'summary_df_selected' in locals() and not summary_df_selected.empty:
+    # Ensure 'Date' column is in summary_df_selected and is datetime type
+    if 'Date' in summary_df_selected.columns:
+         # Ensure 'Date' column is datetime type if not already
+        summary_df_selected['Date'] = pd.to_datetime(summary_df_selected['Date'])
+        start_date = summary_df_selected['Date'].min().strftime('%Y-%m-%d')
+        end_date = summary_df_selected['Date'].max().strftime('%Y-%m-%d')
+        timeframe = f'{start_date} {end_date}'
+    else:
+        print("Warning: 'Date' column not found in summary_df_selected. Using fallback timeframe.")
+        timeframe = 'today 5-y' # Fallback timeframe
+else:
+    print("Warning: summary_df_selected is not defined or is empty. Using fallback timeframe.")
+    timeframe = 'today 5-y' # Fallback timeframe
+
+
+print(f"Fetching Google Trends data for keywords: {keywords} over timeframe: {timeframe}")
+
+try:
+    # Build payload for the keywords and timeframe
+    pytrends.build_payload(keywords, cat=0, timeframe=timeframe, geo='', gprop='')
+
+    # Get interest over time for the specified timeframe
+    interest_df = pytrends.interest_over_time()
+
+    # If data is returned and the 'isPartial' column exists, remove it
+    if not interest_df.empty and 'isPartial' in interest_df.columns:
+        interest_df = interest_df.drop('isPartial', axis=1)
+
+    if not interest_df.empty:
+        print("\nGoogle Search Interest over the specified timeframe:")
+        display(interest_df)
+    else:
+        print("\nNo search interest data could be fetched for the specified timeframe and keywords.")
+
+except Exception as e:
+    print(f"\nCould not fetch data: {e}")
+
+# Get the selected ticker from the dropdown
+selected_ticker = ticker_dropdown.value
+
+# Calculate Q1 and Q3 for the selected ticker's daily percentage change
+q1 = df_analysis_percentage[selected_ticker].quantile(0.25)
+q3 = df_analysis_percentage[selected_ticker].quantile(0.75)
+
+# Filter dates where daily change is below Q1 or above Q3 for the selected ticker
+outlier_dates = df_analysis_percentage[(df_analysis_percentage[selected_ticker] < q1) | (df_analysis_percentage[selected_ticker] > q3)].index
+
+# Get the percentage change values for the outlier dates
+outlier_percentage_changes = df_analysis_percentage.loc[outlier_dates, selected_ticker]
+
+# Create a DataFrame to display dates and percentage changes
+summary_df_selected = pd.DataFrame({
+    'Date': outlier_dates,
+    'Daily Change (%)': outlier_percentage_changes
+})
+
+print(f"Summary of dates with daily change outside Q1 and Q3 for {selected_ticker}:")
+display(summary_df_selected)
+
+import pandas as pd
+
+# Ensure interest_df is available
+if 'interest_df' in locals() and not interest_df.empty:
+    # Resample the monthly interest_df to daily frequency and forward fill
+    interest_df_daily = interest_df.resample('D').ffill()
+
+    print("Daily resampled Google Search Interest (interest_df_daily):")
+    display(interest_df_daily.head())
+    display(interest_df_daily.tail())
+
+else:
+    print("Please ensure 'interest_df' DataFrame is created and executed.")
+
+import pandas as pd
+
+# Get the selected ticker from the dropdown
+selected_ticker = ticker_dropdown.value
+
+# Function to get keywords based on selected ticker (including USD)
+def get_keywords_for_merge(ticker_name):
+    keyword_map = {
+        "USD to BTC": ["USD", "Bitcoin"],
+        "USD to Oil": ["USD", "Crude oil price"],
+        "USD to Gold": ["USD", "Gold price"],
+        "USD to Chinese Yuan": ["USD", "Chinese Yuan"]
+    }
+    # Return keywords that are present in the interest_df_daily columns
+    return [keyword for keyword in keyword_map.get(ticker_name, ["USD"]) if keyword in interest_df_daily.columns]
+
+
+# Ensure summary_df_selected and interest_df_daily are available
+if 'summary_df_selected' in locals() and 'interest_df_daily' in locals() and not summary_df_selected.empty and not interest_df_daily.empty:
+
+    # Ensure summary_df_selected has 'Date' as index for merging
+    if not isinstance(summary_df_selected.index, pd.DatetimeIndex):
+        # Check if 'Date' column exists before setting it as index
+        if 'Date' in summary_df_selected.columns:
+             summary_df_selected.set_index('Date', inplace=True)
+        else:
+            print("Error: 'Date' column not found in summary_df_selected. Cannot merge.")
+            # Stop execution or handle error appropriately
+            # For now, print error and proceed to prevent crash
+            pass
+
+
+    # Get the relevant keywords for the selected ticker that are present in interest_df_daily
+    keywords_for_merge = get_keywords_for_merge(selected_ticker)
+
+    if keywords_for_merge:
+        # Select the search interest columns for the relevant keywords from the daily resampled data
+        search_interest_selected_keywords = interest_df_daily[keywords_for_merge]
+
+        # Merge summary_df_selected with the selected search interest data based on date index
+        merged_summary_search = summary_df_selected.merge(
+            search_interest_selected_keywords,
+            left_index=True,
+            right_index=True,
+            how='inner' # Use inner merge to keep only dates present in both
+        )
+
+        print(f"Merged Summary of High Variance Dates, Daily Change ({selected_ticker}), and Google Search Interest ({keywords_for_merge}):")
+        display(merged_summary_search)
+
+    else:
+        print(f"Could not find relevant Google Search Interest data for keywords associated with '{selected_ticker}' in 'interest_df_daily'.")
+        print(f"Expected keywords: {get_keywords_for_merge(selected_ticker)}")
+
+
+else:
+    print("Please ensure 'summary_df_selected' and 'interest_df_daily' DataFrames are created and executed.")
+    if 'summary_df_selected' not in locals() or summary_df_selected.empty:
+        print("'summary_df_selected' is not defined or empty.")
+    if 'interest_df_daily' not in locals() or interest_df_daily.empty:
+        print("'interest_df_daily' is not defined or empty.")
