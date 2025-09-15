@@ -9,8 +9,9 @@ import matplotlib.pyplot as plt
 import streamlit as st
 
 # --- Config ---
-ARTE_ROOT = Path("artefacts")
-KEYWORD_FILE = Path("keyword_sets/keyword_sets.json")
+BASE_DIR = Path(__file__).resolve().parent.parent
+ARTE_ROOT = BASE_DIR / "artefacts"
+KEYWORD_FILE = BASE_DIR / "keyword_sets" / "keyword_sets.json"
 ASSETS = ["BTC", "Gold", "Oil", "USDCNY"]
 FREQS = ["D", "W"]
 STRATEGIES = ["conservative", "balanced", "aggressive"]
