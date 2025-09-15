@@ -1,0 +1,4 @@
+asset,dataset,model,strategy,auc,accuracy,trades,run_id
+BTC,eng_base,MLP,conservative,0.5629885057471264,0.48872180451127817,25,w_prod_20250914-054312
+BTC,eng_base,MLP,balanced,0.5629885057471264,0.5112781954887218,45,w_prod_20250914-054312
+BTC,eng_base,MLP,aggressive,0.5629885057471264,0.5789473684210527,28,w_prod_20250914-054312

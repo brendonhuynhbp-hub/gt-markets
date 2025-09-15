@@ -1,0 +1,4 @@
+asset,dataset,model,strategy,auc,accuracy,trades,run_id
+USDCNY,raw_ext,GRU,conservative,0.635643115942029,0.5639097744360902,6,w_prod_20250914-054312
+USDCNY,raw_ext,GRU,balanced,0.635643115942029,0.5939849624060151,9,w_prod_20250914-054312
+USDCNY,raw_ext,GRU,aggressive,0.635643115942029,0.5263157894736842,5,w_prod_20250914-054312

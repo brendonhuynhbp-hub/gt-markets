@@ -1,0 +1,44 @@
+[
+  {
+    "name": "core",
+    "pair": "BTC",
+    "freq": "D",
+    "keywords": [
+      "bitcoin",
+      "crypto",
+      "blockchain"
+    ]
+  },
+  {
+    "name": "core_plus_digital_currency",
+    "pair": "BTC",
+    "freq": "D",
+    "keywords": [
+      "bitcoin",
+      "crypto",
+      "blockchain",
+      "digital currency"
+    ]
+  },
+  {
+    "name": "core",
+    "pair": "Gold",
+    "freq": "W",
+    "keywords": [
+      "gold",
+      "inflation",
+      "hedge"
+    ]
+  },
+  {
+    "name": "core_plus_safe_haven",
+    "pair": "Gold",
+    "freq": "W",
+    "keywords": [
+      "gold",
+      "inflation",
+      "hedge",
+      "safe haven"
+    ]
+  }
+]

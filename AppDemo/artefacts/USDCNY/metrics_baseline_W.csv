@@ -1,0 +1,4 @@
+asset,dataset,model,strategy,auc,accuracy,trades,run_id
+USDCNY,raw_base,LSTM,conservative,0.6139039855072463,0.5488721804511278,1,w_prod_20250914-054312
+USDCNY,raw_base,LSTM,balanced,0.6139039855072463,0.5413533834586466,1,w_prod_20250914-054312
+USDCNY,raw_base,LSTM,aggressive,0.6139039855072463,0.518796992481203,0,w_prod_20250914-054312

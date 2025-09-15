@@ -1,0 +1,26 @@
+{
+  "asset": "Oil",
+  "frequencies": [
+    "D",
+    "W"
+  ],
+  "runs": {
+    "D": "d_prod_20250914-055550",
+    "W": "w_prod_20250914-054312"
+  },
+  "best_models": {
+    "D": {
+      "baseline": "LSTM@eng_base",
+      "keywords": "GRU@raw_ext"
+    },
+    "W": {
+      "baseline": "MLP@raw_base",
+      "keywords": "MLP@raw_ext"
+    }
+  },
+  "strategies": {
+    "conservative": 0.6,
+    "balanced": 0.55,
+    "aggressive": 0.5
+  }
+}

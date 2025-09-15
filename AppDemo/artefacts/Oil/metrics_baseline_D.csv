@@ -1,0 +1,4 @@
+asset,dataset,model,strategy,auc,accuracy,trades,run_id
+Oil,eng_base,LSTM,conservative,0.5751334593783017,0.546772068511199,29,d_prod_20250914-055550
+Oil,eng_base,LSTM,balanced,0.5751334593783017,0.546772068511199,35,d_prod_20250914-055550
+Oil,eng_base,LSTM,aggressive,0.5751334593783017,0.5362318840579711,41,d_prod_20250914-055550
