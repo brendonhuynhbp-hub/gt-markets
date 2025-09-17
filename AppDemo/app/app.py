@@ -38,6 +38,28 @@ import matplotlib.pyplot as plt
 # -------------------------------------------------------------
 APP_TITLE = "GT Markets – Demo App"
 ARTE_ROOT = Path(os.environ.get("ARTE_ROOT", "AppDemo/artefacts"))
+
+import streamlit as st
+
+_required = {
+    "GOLD": ["metrics_baseline_D.csv","metrics_baseline_W.csv","metrics_keywords_D.csv","metrics_keywords_W.csv"],
+    "BTC":  ["metrics_baseline_D.csv","metrics_baseline_W.csv","metrics_keywords_D.csv","metrics_keywords_W.csv"],
+    "OIL":  ["metrics_baseline_D.csv","metrics_baseline_W.csv","metrics_keywords_D.csv","metrics_keywords_W.csv"],
+    "USDCNY":["metrics_baseline_D.csv","metrics_baseline_W.csv","metrics_keywords_D.csv","metrics_keywords_W.csv"],
+}
+
+missing = []
+if not ARTE_ROOT.exists():
+    st.error(f"Artefacts folder not found: {ARTE_ROOT}")
+else:
+    for asset, files in _required.items():
+        for f in files:
+            if not (ARTE_ROOT/asset/f).exists():
+                missing.append(f"{asset}/{f}")
+
+if missing:
+    st.warning("Missing artefact files:\n" + "\n".join(missing))
+
 KEYWORD_DIR = Path("keyword_sets")
 KEYWORD_FILE = KEYWORD_DIR / "keyword_sets.json"
 
