@@ -37,7 +37,7 @@ import matplotlib.pyplot as plt
 # Config
 # -------------------------------------------------------------
 APP_TITLE = "GT Markets – Demo App"
-ARTE_ROOT = Path(os.environ.get("ARTE_ROOT", "artefacts"))
+ARTE_ROOT = Path(os.environ.get("ARTE_ROOT", "AppDemo/artefacts"))
 KEYWORD_DIR = Path("keyword_sets")
 KEYWORD_FILE = KEYWORD_DIR / "keyword_sets.json"
 
