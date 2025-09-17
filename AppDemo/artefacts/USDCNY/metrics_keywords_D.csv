@@ -1,4 +1,0 @@
-asset,dataset,model,strategy,auc,accuracy,trades,run_id
-USDCNY,eng_ext,LR,conservative,0.6818181818181819,0.6145833333333334,269,d_prod_20250914-055550
-USDCNY,eng_ext,LR,balanced,0.6818181818181819,0.6263020833333334,261,d_prod_20250914-055550
-USDCNY,eng_ext,LR,aggressive,0.6818181818181819,0.6171875,254,d_prod_20250914-055550

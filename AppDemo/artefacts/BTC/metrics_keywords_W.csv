@@ -1,4 +1,0 @@
-asset,dataset,model,strategy,auc,accuracy,trades,run_id
-BTC,eng_ext,XGB,conservative,0.5629984051036683,0.5,43,w_prod_20250914-054312
-BTC,eng_ext,XGB,balanced,0.5629984051036683,0.5211267605633803,43,w_prod_20250914-054312
-BTC,eng_ext,XGB,aggressive,0.5629984051036683,0.5704225352112676,48,w_prod_20250914-054312
