@@ -1,0 +1,26 @@
+{
+  "asset": "Gold",
+  "frequencies": [
+    "D",
+    "W"
+  ],
+  "runs": {
+    "D": "d_prod_20250914-055550",
+    "W": "w_prod_20250914-054312"
+  },
+  "best_models": {
+    "D": {
+      "baseline": "XGB@raw_base",
+      "keywords": "LSTM@raw_ext"
+    },
+    "W": {
+      "baseline": "LSTM@raw_base",
+      "keywords": "LSTM@eng_ext"
+    }
+  },
+  "strategies": {
+    "conservative": 0.6,
+    "balanced": 0.55,
+    "aggressive": 0.5
+  }
+}

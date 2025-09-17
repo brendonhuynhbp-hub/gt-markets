@@ -1,0 +1,26 @@
+{
+  "asset": "BTC",
+  "frequencies": [
+    "D",
+    "W"
+  ],
+  "runs": {
+    "D": "d_prod_20250914-055550",
+    "W": "w_prod_20250914-054312"
+  },
+  "best_models": {
+    "D": {
+      "baseline": "RF@eng_base",
+      "keywords": "XGB@eng_ext"
+    },
+    "W": {
+      "baseline": "MLP@eng_base",
+      "keywords": "XGB@eng_ext"
+    }
+  },
+  "strategies": {
+    "conservative": 0.6,
+    "balanced": 0.55,
+    "aggressive": 0.5
+  }
+}
