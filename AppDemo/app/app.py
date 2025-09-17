@@ -1,195 +1,521 @@
+# Streamlit Demo App for GT Markets (auto‑detect strategies)
+# -------------------------------------------------------------
+# Pages:
+# 1) Landing
+# 2) Compare (Baseline vs Keywords)
+# 3) Keyword Lab (manage & compare keyword sets)
+# 4) Signals & Audit (preview signals + features_used)
+# 5) Diagnostics (quick file presence checks)
+#
+# Data layout (ARTE_ROOT defaults to ./artefacts):
+#   artefacts/
+#     <ASSET>/
+#       metrics_baseline_D.csv
+#       metrics_keywords_D.csv           (optional until Phase 2)
+#       metrics_baseline_W.csv
+#       metrics_keywords_W.csv           (optional until Phase 2)
+#       signals_<STRATEGY>_D.csv         (e.g., signals_S1_trend_D.csv)
+#       signals_<STRATEGY>_W.csv
+#       leaderboard_{D|W}.csv            (optional)
+#       features_used.txt                (optional)
+#       figs/*_{D|W}.png                 (optional)
+#       metadata.json                    (optional)
+#
+# Keyword sets live under: ./keyword_sets/keyword_sets.json
+# -------------------------------------------------------------
 
-# Google Trends Financial Modelling — Demo App (read-only)
-# Loads precomputed artefacts from AppDemo/artefacts and supports
-# frequency-suffixed filenames (e.g., metrics_baseline_D.csv).
-
+import os
 from pathlib import Path
 import json
+from typing import Dict, List, Optional, Tuple
+
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 import streamlit as st
+import matplotlib.pyplot as plt
 
-# Resolve paths relative to this file (…/AppDemo)
-BASE_DIR   = Path(__file__).resolve().parent.parent
-ARTE_ROOT  = BASE_DIR / "artefacts"
-KEYWORD_FILE = BASE_DIR / "keyword_sets" / "keyword_sets.json"
+# -------------------------
+# Config & Constants
+# -------------------------
+APP_TITLE = "GT Markets – Demo App"
+ARTE_ROOT = Path(os.environ.get("ARTE_ROOT", "artefacts"))
+KEYWORD_DIR = Path("keyword_sets")
+KEYWORD_FILE = KEYWORD_DIR / "keyword_sets.json"
 
-ASSETS = ["BTC", "Gold", "Oil", "USDCNY"]
-FREQS  = ["D", "W"]
-STRATEGIES = ["conservative", "balanced", "aggressive"]
+ASSET_ORDER = ["GOLD", "BTC", "OIL", "USDCNY"]  # UI ordering only; we will also discover folders
+FREQ_LABELS = {"D": "Daily", "W": "Weekly"}
 
-# ---------- Helpers ----------
-def safe_read_csv(p: Path, **kwargs):
+# Make dirs if missing (for local runs)
+KEYWORD_DIR.mkdir(parents=True, exist_ok=True)
+
+# -------------------------
+# Helpers: IO with caching
+# -------------------------
+@st.cache_data(show_spinner=False)
+def list_assets(arte_root: Path) -> List[str]:
+    if not arte_root.exists():
+        return []
+    assets = sorted([p.name for p in arte_root.iterdir() if p.is_dir()])
+    # Keep desired order where possible
+    order = [a for a in ASSET_ORDER if a in assets]
+    rest = [a for a in assets if a not in ASSET_ORDER]
+    return order + rest
+
+
+def _csv_safe_read(path: Path) -> Optional[pd.DataFrame]:
     try:
-        return pd.read_csv(p, **kwargs)
-    except Exception:
-        return None
+        if path.exists():
+            df = pd.read_csv(path)
+            # Try parse date if present
+            for c in ["Date", "date", "timestamp", "time"]:
+                if c in df.columns:
+                    df[c] = pd.to_datetime(df[c], errors="ignore")
+            return df
+    except Exception as e:
+        st.warning(f"Failed to read CSV: {path.name} — {e}")
+    return None
 
-def metrics_paths(asset_dir: Path, freq: str):
-    # supports frequency suffix (_D/_W)
-    return (
-        asset_dir / f"metrics_baseline_{freq}.csv",
-        asset_dir / f"metrics_keywords_{freq}.csv",
-    )
 
-def equity_paths(asset_dir: Path, freq: str):
-    # optional, only if you exported them
-    return (
-        asset_dir / f"equity_baseline_{freq}.csv",
-        asset_dir / f"equity_keywords_{freq}.csv",
-    )
+@st.cache_data(show_spinner=False)
+def load_metrics(asset: str, freq: str) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
+    root = ARTE_ROOT / asset
+    mb = root / f"metrics_baseline_{freq}.csv"
+    mk = root / f"metrics_keywords_{freq}.csv"
+    return _csv_safe_read(mb), _csv_safe_read(mk)
 
-def signals_path(asset_dir: Path, strategy: str, freq: str):
-    return asset_dir / f"signals_{strategy}_{freq}.csv"
 
-def load_features(asset_dir: Path):
-    p = asset_dir / "features_used.txt"
-    return p.read_text() if p.exists() else ""
+@st.cache_data(show_spinner=False)
+def load_signals(asset: str, strategy: str, freq: str) -> Optional[pd.DataFrame]:
+    root = ARTE_ROOT / asset
+    sig = root / f"signals_{strategy}_{freq}.csv"
+    return _csv_safe_read(sig)
 
-def list_keyword_sets():
-    if KEYWORD_FILE.exists():
+
+@st.cache_data(show_spinner=False)
+def load_leaderboard(asset: str, freq: str) -> Optional[pd.DataFrame]:
+    path = ARTE_ROOT / asset / f"leaderboard_{freq}.csv"
+    return _csv_safe_read(path)
+
+
+@st.cache_data(show_spinner=False)
+def load_features_text(asset: str) -> Optional[str]:
+    path = ARTE_ROOT / asset / "features_used.txt"
+    if path.exists():
         try:
-            return json.loads(KEYWORD_FILE.read_text())
+            return path.read_text(encoding="utf-8")
         except Exception:
-            return []
-    return []
+            return path.read_text(errors="ignore")
+    return None
 
-def list_sets_for(asset: str, freq: str, saved_sets):
-    return [s for s in saved_sets if s.get("pair")==asset and s.get("freq")==freq]
 
-def style_delta(a, b):
-    if a is None or b is None:
-        return "—"
+@st.cache_data(show_spinner=False)
+def find_equity_figs(asset: str, freq: str) -> List[Path]:
+    figs_dir = ARTE_ROOT / asset / "figs"
+    if not figs_dir.exists():
+        return []
+    return sorted([p for p in figs_dir.glob(f"*_{freq}.png")])
+
+
+@st.cache_data(show_spinner=False)
+def discover_strategies(asset: str, freq: str) -> List[str]:
+    """
+    Auto-detect strategy IDs by scanning files:
+      artefacts/<ASSET>/signals_<STRATEGY>_<FREQ>.csv
+    Returns sorted list like: ["S1_trend", "S2_meanrev", "S3_breakout"].
+    """
+    root = ARTE_ROOT / asset
+    if not root.exists():
+        return []
+    names = set()
+    for p in root.glob(f"signals_*_{freq}.csv"):
+        stem_parts = p.stem.split("_")  # e.g., [signals, S1, trend, D]
+        if len(stem_parts) >= 3:
+            names.add("_".join(stem_parts[1:-1]))  # join middle bits
+    return sorted(names)
+
+
+# -------------------------
+# Keyword set storage
+# -------------------------
+DEFAULT_KEYWORD_SETS = {
+    "core_gold": {
+        "asset": "GOLD",
+        "freq": "D",
+        "keywords": ["gold price", "gold news", "safe haven", "interest rates"],
+    },
+    "core_btc": {
+        "asset": "BTC",
+        "freq": "D",
+        "keywords": ["bitcoin", "crypto fear", "halving", "btc etf"],
+    },
+}
+
+
+def _load_keyword_sets() -> Dict[str, Dict]:
+    if not KEYWORD_FILE.exists():
+        KEYWORD_FILE.write_text(json.dumps(DEFAULT_KEYWORD_SETS, indent=2))
+        return DEFAULT_KEYWORD_SETS
     try:
-        return f"{(a-b):+.3f}"
-    except Exception:
-        return "—"
+        return json.loads(KEYWORD_FILE.read_text())
+    except Exception as e:
+        st.warning(f"Failed to read keyword_sets.json — using defaults. Error: {e}")
+        return DEFAULT_KEYWORD_SETS
 
-# ---------- UI ----------
-st.set_page_config(page_title="Google Trends Financial Modelling — Demo", layout="wide")
-st.title("Google Trends Financial Modelling — Demo")
 
-c1, c2, c3 = st.columns(3)
-with c1: asset = st.selectbox("Asset", ASSETS, index=0)
-with c2: freq  = st.selectbox("Frequency", FREQS, index=0)
-with c3: strategy = st.radio("Strategy", STRATEGIES, index=1)
+def _save_keyword_sets(data: Dict[str, Dict]) -> None:
+    KEYWORD_FILE.write_text(json.dumps(data, indent=2))
 
-# NOTE: artefacts are directly under asset folder (no D/W subfolder)
-asset_dir = ARTE_ROOT / asset
-if not asset_dir.exists():
-    st.error(f"No artefacts folder found: {asset_dir}")
-    st.stop()
 
-tab1, tab2, tab3 = st.tabs(["Baseline vs Keywords", "Keyword Sets", "Signals & Audit"])
+# -------------------------
+# Small UI helpers
+# -------------------------
 
-# ---------- Tab 1: Baseline vs Keywords ----------
-with tab1:
-    st.subheader("Baseline vs Keywords (precomputed)")
-    mb, mk = metrics_paths(asset_dir, freq)
-    baseline = safe_read_csv(mb)
-    keywords = safe_read_csv(mk)
-
-    if baseline is None and keywords is None:
-        st.warning(f"No metrics found. Expected files:\n- {mb.name}\n- {mk.name}")
+def kpi_badge(label: str, value: Optional[float], fmt: str = "{:.4f}"):
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        st.metric(label, "–")
     else:
-        frames = []
-        if baseline is not None:
-            t = baseline.copy()
-            t["variant"] = "baseline"
-            frames.append(t)
-        if keywords is not None:
-            t = keywords.copy()
-            t["variant"] = "keywords"
-            frames.append(t)
-        allm = pd.concat(frames, ignore_index=True) if frames else None
+        st.metric(label, fmt.format(value))
 
-        if allm is not None:
-            # narrow to chosen strategy if the field exists
-            view = allm
-            if "strategy" in view.columns:
-                view = view[view["strategy"]==strategy]
-            cols = [c for c in ["variant","model","dataset","strategy","auc","accuracy","trades","sharpe","max_dd","turnover","run_id"] if c in view.columns]
-            st.dataframe(view[cols] if cols else view, use_container_width=True)
 
-            # quick deltas
-            auc_kw=acc_kw=auc_bl=acc_bl=None
-            if set(["variant","auc"]).issubset(view.columns):
-                try: auc_kw = float(view.loc[view["variant"]=="keywords","auc"].iloc[0])
-                except: pass
-                try: auc_bl = float(view.loc[view["variant"]=="baseline","auc"].iloc[0])
-                except: pass
-            if set(["variant","accuracy"]).issubset(view.columns):
-                try: acc_kw = float(view.loc[view["variant"]=="keywords","accuracy"].iloc[0])
-                except: pass
-                try: acc_bl = float(view.loc[view["variant"]=="baseline","accuracy"].iloc[0])
-                except: pass
+def verdict_from_deltas(d_auc: Optional[float], d_acc: Optional[float]) -> str:
+    if d_auc is None and d_acc is None:
+        return "Inconclusive"
+    scores = []
+    if d_auc is not None and not np.isnan(d_auc):
+        scores.append(np.sign(d_auc))
+    if d_acc is not None and not np.isnan(d_acc):
+        scores.append(np.sign(d_acc))
+    if not scores:
+        return "Inconclusive"
+    s = np.mean(scores)
+    if s > 0:
+        return "Adds Value"
+    if s < 0:
+        return "No Value"
+    return "Inconclusive"
 
-            cA,cB,cC = st.columns(3)
-            with cA: st.metric("Δ AUC (KW - Base)", style_delta(auc_kw, auc_bl))
-            with cB: st.metric("Δ Accuracy (KW - Base)", style_delta(acc_kw, acc_bl))
-            verdict = "Inconclusive"
-            if (auc_kw is not None and auc_bl is not None):
-                if (auc_kw - auc_bl) >= 0.02: verdict = "Adds Value"
-                elif (auc_kw - auc_bl) <= -0.02: verdict = "No Value"
-            with cC: st.metric("Verdict", verdict)
 
-    # optional equity overlay
-    eb, ek = equity_paths(asset_dir, freq)
-    e_base = safe_read_csv(eb, parse_dates=["date"]) if eb.exists() else None
-    e_kw   = safe_read_csv(ek, parse_dates=["date"]) if ek.exists() else None
-    if e_base is not None or e_kw is not None:
-        st.caption("Equity curve overlay (if available)")
-        fig, ax = plt.subplots(figsize=(8,3))
-        if e_base is not None: ax.plot(e_base["date"], e_base["equity"], label="baseline")
-        if e_kw   is not None: ax.plot(e_kw["date"],   e_kw["equity"],   label="keywords")
-        ax.set_xlabel("Date"); ax.set_ylabel("Equity"); ax.legend()
-        st.pyplot(fig)
+def plot_delta_bars(d: Dict[str, float], title: str):
+    fig, ax = plt.subplots()
+    names = list(d.keys())
+    vals = [d[k] for k in names]
+    ax.bar(names, vals)
+    ax.axhline(0, linewidth=1)
+    ax.set_title(title)
+    ax.set_ylabel("Δ (Keywords - Baseline)")
+    st.pyplot(fig)
 
-# ---------- Tab 2: Keyword Sets ----------
-with tab2:
-    st.subheader("Keyword Sets (precomputed variants)")
-    saved_sets = list_keyword_sets()
-    sets_for_sel = list_sets_for(asset, freq, saved_sets)
-    if not sets_for_sel:
-        st.info("No entries for this asset/frequency in keyword_sets.json.")
-    else:
-        names = [s["name"] for s in sets_for_sel]
-        choice = st.selectbox("Select keyword set", names)
-        set_dir = asset_dir / choice
-        metrics_path = set_dir / f"metrics_{freq}.csv" if (set_dir / f"metrics_{freq}.csv").exists() else set_dir / "metrics.csv"
-        if metrics_path.exists():
-            df = pd.read_csv(metrics_path)
-            if "strategy" in df.columns:
-                st.dataframe(df[df["strategy"]==strategy], use_container_width=True)
-            else:
-                st.dataframe(df, use_container_width=True)
+
+def plot_signals_step(df: pd.DataFrame, time_col: Optional[str] = None, signal_col: Optional[str] = None, title: str = "Signals (last 20)"):
+    # Guess columns
+    if time_col is None:
+        for c in ["Date", "date", "timestamp", "time"]:
+            if c in df.columns:
+                time_col = c
+                break
+    if signal_col is None:
+        for c in ["signal", "Signal", "trade", "position", "Position"]:
+            if c in df.columns:
+                signal_col = c
+                break
+    if time_col is None or signal_col is None:
+        st.info("Cannot infer time/signal column to plot step chart.
+Hint: expected columns like 'Date' and 'signal'.")
+        return
+    df2 = df.tail(20).copy()
+    fig, ax = plt.subplots()
+    ax.step(df2[time_col], df2[signal_col], where="post")
+    ax.set_title(title)
+    ax.set_xlabel("Time")
+    ax.set_ylabel(signal_col)
+    plt.xticks(rotation=25)
+    st.pyplot(fig)
+
+
+# -------------------------
+# Pages
+# -------------------------
+
+def page_landing(all_assets: List[str]):
+    st.header("Landing")
+    if not all_assets:
+        st.error(f"No artefacts found at: {ARTE_ROOT.resolve()}")
+        st.stop()
+
+    c1, c2 = st.columns(2)
+    asset = c1.selectbox("Asset", options=all_assets, index=0)
+    freq = c2.radio("Frequency", options=list(FREQ_LABELS.keys()), format_func=lambda x: FREQ_LABELS[x], horizontal=True)
+
+    # Store selection in session_state for other pages
+    st.session_state["sel_asset"] = asset
+    st.session_state["sel_freq"] = freq
+
+    # Quick availability view
+    mb, mk = load_metrics(asset, freq)
+    st.subheader("Availability Check")
+    a1, a2 = st.columns(2)
+    with a1:
+        st.write("Baseline Metrics:")
+        st.success("Found") if mb is not None else st.warning("Missing")
+    with a2:
+        st.write("Keyword Metrics:")
+        st.success("Found") if mk is not None else st.info("`metrics_keywords_*` not found yet (Phase 2)")
+
+    # Show detected strategies
+    avail = discover_strategies(asset, freq)
+    st.write("Detected strategies:", ", ".join(avail) if avail else "(none)")
+
+
+def page_compare(all_assets: List[str]):
+    st.header("Compare — Baseline vs Keywords")
+    if not all_assets:
+        st.error("No assets available.")
+        st.stop()
+
+    asset = st.selectbox("Asset", all_assets, index=max(0, all_assets.index(st.session_state.get("sel_asset", all_assets[0]))))
+    freq = st.radio("Frequency", list(FREQ_LABELS.keys()), index=0 if st.session_state.get("sel_freq", "D") == "D" else 1, format_func=lambda x: FREQ_LABELS[x], horizontal=True)
+
+    mb, mk = load_metrics(asset, freq)
+
+    if mb is None and mk is None:
+        st.warning("Both metrics tables are missing. Place metrics_baseline_* and (later) metrics_keywords_* in the asset folder.")
+        st.stop()
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("Baseline Metrics")
+        if mb is not None:
+            st.dataframe(mb)
+            csv = mb.to_csv(index=False).encode("utf-8")
+            st.download_button("Download baseline metrics CSV", data=csv, file_name=f"{asset}_metrics_baseline_{freq}.csv")
         else:
-            st.warning(f"metrics not found in selected set: {metrics_path.name}")
+            st.info("metrics_baseline_* not found")
 
-        core_dir = asset_dir / "core"
-        core_metrics = (core_dir / f"metrics_{freq}.csv") if (core_dir / f"metrics_{freq}.csv").exists() else (core_dir / "metrics.csv")
-        if choice!="core" and core_metrics.exists() and metrics_path.exists():
-            st.caption("Δ vs core (AUC / Accuracy)")
-            df_sel  = pd.read_csv(metrics_path)
-            df_core = pd.read_csv(core_metrics)
-            a_sel   = df_sel.loc[df_sel.get("strategy","")==strategy, ["auc","accuracy"]].mean(numeric_only=True)
-            a_core  = df_core.loc[df_core.get("strategy","")==strategy, ["auc","accuracy"]].mean(numeric_only=True)
-            c1,c2 = st.columns(2)
-            with c1: st.metric("Δ AUC (set - core)", style_delta(a_sel.get("auc"), a_core.get("auc")))
-            with c2: st.metric("Δ Accuracy (set - core)", style_delta(a_sel.get("accuracy"), a_core.get("accuracy")))
+    with c2:
+        st.subheader("Keyword Metrics")
+        if mk is not None:
+            st.dataframe(mk)
+            csv = mk.to_csv(index=False).encode("utf-8")
+            st.download_button("Download keyword metrics CSV", data=csv, file_name=f"{asset}_metrics_keywords_{freq}.csv")
+        else:
+            st.info("`metrics_keywords_*` not found yet. Run Phase 2 (apply Google Trends filters) to populate.")
 
-# ---------- Tab 3: Signals & Audit ----------
-with tab3:
-    st.subheader("Signals")
-    sig_path = signals_path(asset_dir, strategy, freq)
-    sigs = safe_read_csv(sig_path, parse_dates=["date"])
-    if sigs is not None:
-        st.dataframe(sigs.tail(20), use_container_width=True)
-        st.download_button("Download signals CSV", sigs.to_csv(index=False), file_name=sig_path.name)
+    # KPI deltas if both available
+    st.subheader("KPI Δ (Keywords - Baseline)")
+    d_auc = d_acc = None
+    if mb is not None and mk is not None:
+        def as_scalar(df: pd.DataFrame, col: str) -> Optional[float]:
+            if col in df.columns:
+                try:
+                    return float(pd.to_numeric(df[col], errors="coerce").mean())
+                except Exception:
+                    return None
+            return None
+        # try AUC, Accuracy or any overlapping numeric columns
+        for auc_name in ["AUC", "auc", "roc_auc"]:
+            b = as_scalar(mb, auc_name); k = as_scalar(mk, auc_name)
+            if b is not None and k is not None:
+                d_auc = k - b
+                break
+        for acc_name in ["Accuracy", "accuracy", "acc"]:
+            b = as_scalar(mb, acc_name); k = as_scalar(mk, acc_name)
+            if b is not None and k is not None:
+                d_acc = k - b
+                break
+
+        c3, c4, c5 = st.columns(3)
+        with c3:
+            kpi_badge("Δ AUC", d_auc)
+        with c4:
+            kpi_badge("Δ Accuracy", d_acc)
+        with c5:
+            st.metric("Verdict", verdict_from_deltas(d_auc, d_acc))
+
+        deltas = {}
+        if d_auc is not None and not np.isnan(d_auc):
+            deltas["AUC"] = d_auc
+        if d_acc is not None and not np.isnan(d_acc):
+            deltas["Accuracy"] = d_acc
+        if deltas:
+            plot_delta_bars(deltas, title=f"{asset} {FREQ_LABELS[freq]}")
+
+    # Equity overlay
+    st.subheader("Equity Overlay (figs)")
+    fig_paths = find_equity_figs(asset, freq)
+    if fig_paths:
+        cols = st.columns(min(3, len(fig_paths)))
+        for i, p in enumerate(fig_paths[:6]):
+            with cols[i % len(cols)]:
+                st.image(str(p), caption=p.name, use_container_width=True)
     else:
-        st.info(f"No signals file for this selection: {sig_path.name}")
+        st.caption("No equity figures found under figs/. Optional but nice to have.")
 
-    st.subheader("Features Used (audit)")
-    text = load_features(asset_dir)
-    st.text(text if text else "features_used.txt not found.")
+    # Optional leaderboard
+    st.subheader("Leaderboard (optional)")
+    lb = load_leaderboard(asset, freq)
+    if lb is not None:
+        st.dataframe(lb)
+    else:
+        st.caption("leaderboard_* not provided.")
+
+
+def page_keyword_lab(all_assets: List[str]):
+    st.header("Keyword Lab")
+    sets = _load_keyword_sets()
+
+    st.subheader("Existing Keyword Sets")
+    if sets:
+        view_df = pd.DataFrame([
+            {"name": k, "asset": v.get("asset"), "freq": v.get("freq"), "keywords": ", ".join(v.get("keywords", []))}
+            for k, v in sets.items()
+        ])
+        st.dataframe(view_df)
+    else:
+        st.info("No keyword sets yet. Create one below.")
+
+    st.subheader("Create or Update a Set")
+    with st.form("kw_form", clear_on_submit=False):
+        name = st.text_input("Set name (unique)")
+        asset = st.selectbox("Asset", options=all_assets or ASSET_ORDER)
+        freq = st.radio("Frequency", options=list(FREQ_LABELS.keys()), index=0, format_func=lambda x: FREQ_LABELS[x], horizontal=True)
+        raw = st.text_area("Keywords (comma-separated)", placeholder="gold price, safe haven, interest rates")
+        submitted = st.form_submit_button("Save Set")
+        if submitted:
+            if not name:
+                st.warning("Please provide a set name.")
+            else:
+                kws = [s.strip() for s in raw.split(",") if s.strip()]
+                sets[name] = {"asset": asset, "freq": freq, "keywords": kws}
+                _save_keyword_sets(sets)
+                st.success(f"Saved set '{name}' with {len(kws)} keywords.")
+                st.cache_data.clear()
+
+    st.subheader("Delete a Set")
+    if sets:
+        del_name = st.selectbox("Choose a set to delete", options=["(none)"] + list(sets.keys()))
+        if del_name != "(none)":
+            if st.button("Delete selected set", type="secondary"):
+                sets.pop(del_name, None)
+                _save_keyword_sets(sets)
+                st.success(f"Deleted set '{del_name}'.")
+                st.cache_data.clear()
+
+    st.subheader("Compare Two Sets (proxy)")
+    if len(sets) >= 2:
+        c1, c2 = st.columns(2)
+        a = c1.selectbox("Set A", options=list(sets.keys()), key="kwA")
+        b = c2.selectbox("Set B", options=[k for k in sets.keys() if k != st.session_state.get("kwA")], key="kwB")
+        sa, sb = sets[a], sets[b]
+        same_asset_freq = (sa.get("asset") == sb.get("asset")) and (sa.get("freq") == sb.get("freq"))
+        if not same_asset_freq:
+            st.info("Pick sets with the same asset & frequency for a fair comparison.")
+        asset = sa.get("asset"); freq = sa.get("freq")
+        mk = load_metrics(asset, freq)[1]  # using keyword metrics as proxy once available
+        if mk is None:
+            st.caption("metrics_keywords_* not available yet — generate Phase 2 results to compare sets.")
+        else:
+            st.dataframe(mk)
+    else:
+        st.caption("Create at least two sets to compare.")
+
+
+def page_signals_audit(all_assets: List[str]):
+    st.header("Signals & Audit")
+    if not all_assets:
+        st.error("No assets available.")
+        st.stop()
+
+    c1, c2 = st.columns(2)
+    asset = c1.selectbox("Asset", all_assets, index=max(0, all_assets.index(st.session_state.get("sel_asset", all_assets[0]))))
+    freq = c2.radio("Frequency", list(FREQ_LABELS.keys()), index=0 if st.session_state.get("sel_freq", "D") == "D" else 1, format_func=lambda x: FREQ_LABELS[x], horizontal=True)
+
+    available = discover_strategies(asset, freq)
+    if not available:
+        st.info("No signals files found for this selection. Expected: signals_<STRATEGY>_<FREQ>.csv")
+        st.stop()
+
+    strat = st.selectbox("Strategy", available)
+    st.session_state["sel_strategy"] = strat
+
+    df_sig = load_signals(asset, strat, freq)
+    if df_sig is None or df_sig.empty:
+        st.warning("Signals file not found or empty for selection.")
+    else:
+        st.subheader("Signals Preview (last 20)")
+        plot_signals_step(df_sig, title=f"{asset} {strat} {FREQ_LABELS[freq]}")
+        st.dataframe(df_sig.tail(20))
+        st.download_button(
+            "Download signals CSV",
+            data=df_sig.to_csv(index=False).encode("utf-8"),
+            file_name=f"signals_{asset}_{strat}_{freq}.csv",
+        )
+
+    st.subheader("features_used.txt")
+    txt = load_features_text(asset)
+    if txt:
+        st.code(txt)
+    else:
+        st.caption("No features_used.txt found (optional).")
+
+
+def page_diagnostics(all_assets: List[str]):
+    st.header("Diagnostics")
+    st.write("Resolved ARTE_ROOT:", str(ARTE_ROOT.resolve()))
+    if not ARTE_ROOT.exists():
+        st.error("ARTE_ROOT path does not exist.")
+        return
+    assets = [p for p in ARTE_ROOT.iterdir() if p.is_dir()]
+    st.write("Assets found:", [a.name for a in assets] or "(none)")
+    checklist = [
+        "metrics_baseline_D.csv","metrics_baseline_W.csv",
+        # keywords files are optional until Phase 2
+        "signals_*_D.csv","signals_*_W.csv",
+    ]
+    for a in assets:
+        st.subheader(a.name)
+        missing = []
+        # required baseline metrics
+        for req in ["metrics_baseline_D.csv","metrics_baseline_W.csv"]:
+            if not (a/req).exists(): missing.append(req)
+        # at least one signals file per freq
+        for f in ["D","W"]:
+            if not list(a.glob(f"signals_*_{f}.csv")):
+                missing.append(f"signals_*_{f}.csv (at least one)")
+        if missing:
+            st.warning(f"Missing: {missing}")
+        else:
+            st.success("All baseline files present ✅")
+
+
+# -------------------------
+# App Entry
+# -------------------------
+
+def main():
+    st.set_page_config(page_title=APP_TITLE, layout="wide")
+    st.title(APP_TITLE)
+    st.caption(f"Artefacts root: {ARTE_ROOT.resolve()}")
+
+    assets = list_assets(ARTE_ROOT)
+
+    # Sidebar nav
+    page = st.sidebar.radio(
+        "Navigate",
+        ("Landing", "Compare", "Keyword Lab", "Signals & Audit", "Diagnostics"),
+        index=0,
+    )
+
+    if page == "Landing":
+        page_landing(assets)
+    elif page == "Compare":
+        page_compare(assets)
+    elif page == "Keyword Lab":
+        page_keyword_lab(assets)
+    elif page == "Signals & Audit":
+        page_signals_audit(assets)
+    elif page == "Diagnostics":
+        page_diagnostics(assets)
+
+
+if __name__ == "__main__":
+    main()
