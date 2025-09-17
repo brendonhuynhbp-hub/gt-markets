@@ -301,8 +301,12 @@ def page_keyword_lab(all_assets: List[str]):
             st.cache_data.clear()
     st.subheader("Delete a Set")
     if sets:
-        del_name=st.selectbox("Choose set to delete", options=[\"(none)\"]+list(sets.keys()))
-        if del_name!=\"(none)\" and st.button(\"Delete\", type=\"secondary\"): sets.pop(del_name,None); _save_keyword_sets(sets); st.success(f\"Deleted {del_name}.\"); st.cache_data.clear()
+        del_name = st.selectbox("Choose set to delete", options=["(none)"] + list(sets.keys()))
+        if del_name != "(none)" and st.button("Delete", type="secondary"):
+            sets.pop(del_name, None)
+            _save_keyword_sets(sets)
+            st.success(f"Deleted {del_name}.")
+            st.cache_data.clear()
 
 def page_signals_audit(all_assets: List[str]):
     st.header("Signals & Audit")
