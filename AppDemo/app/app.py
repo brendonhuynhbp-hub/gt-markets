@@ -7,13 +7,13 @@
 # 4) Signals & Audit
 # 5) Diagnostics
 #
-# Data layout (ARTE_ROOT defaults to ./artefacts):
+# Data layout (ARTE_ROOT defaults to ./AppDemo/artefacts):
 #   artefacts/<ASSET>/
 #       metrics_baseline_D.csv
 #       metrics_keywords_D.csv   (optional until Phase 2)
 #       metrics_baseline_W.csv
 #       metrics_keywords_W.csv   (optional until Phase 2)
-#       signals_<STRATEGY>_D.csv (e.g., signals_S1_trend_D.csv)
+#       signals_<STRATEGY>_D.csv
 #       signals_<STRATEGY>_W.csv
 #       leaderboard_{D|W}.csv    (optional)
 #       features_used.txt        (optional)
@@ -119,7 +119,7 @@ def discover_strategies(asset: str, freq: str) -> List[str]:
         return []
     names = set()
     for p in root.glob(f"signals_*_{freq}.csv"):
-        parts = p.stem.split("_")  # e.g., [signals, S1, trend, D]
+        parts = p.stem.split("_")
         if len(parts) >= 3:
             names.add("_".join(parts[1:-1]))
     return sorted(names)
@@ -130,9 +130,9 @@ def discover_strategies(asset: str, freq: str) -> List[str]:
 # -------------------------------------------------------------
 DEFAULT_KEYWORD_SETS = {
     "core_gold": {"asset": "GOLD", "freq": "D",
-                   "keywords": ["gold price", "gold news", "safe haven", "interest rates"]},
+                  "keywords": ["gold price", "gold news", "safe haven", "interest rates"]},
     "core_btc": {"asset": "BTC", "freq": "D",
-                  "keywords": ["bitcoin", "crypto fear", "halving", "btc etf"]},
+                 "keywords": ["bitcoin", "crypto fear", "halving", "btc etf"]},
 }
 
 
@@ -154,7 +154,6 @@ def _save_keyword_sets(data: Dict[str, Dict]) -> None:
 # -------------------------------------------------------------
 # UI helpers
 # -------------------------------------------------------------
-
 def kpi_badge(label: str, value: Optional[float], fmt: str = "{:.4f}"):
     if value is None or (isinstance(value, float) and np.isnan(value)):
         st.metric(label, "–")
@@ -194,7 +193,7 @@ def plot_delta_bars(d: Dict[str, float], title: str):
 def plot_signals_step(df: pd.DataFrame, time_col: Optional[str] = None,
                       signal_col: Optional[str] = None,
                       title: str = "Signals (last 20)"):
-    # Try to infer date/signal columns
+    # Auto-infer time/signal columns
     if time_col is None:
         for c in ["Date", "date", "timestamp", "time"]:
             if c in df.columns:
@@ -222,13 +221,13 @@ Hint: expected columns like 'Date' and 'signal'.""")
 # -------------------------------------------------------------
 # Pages
 # -------------------------------------------------------------
-
 def page_landing(all_assets: List[str]):
     st.header("Landing")
     if not all_assets:
         st.error(f"No artefacts found at: {ARTE_ROOT.resolve()}")
         st.stop()
 
+    # asset/freq selectors
     c1, c2 = st.columns(2)
     asset = c1.selectbox("Asset", options=all_assets, index=0)
     freq = c2.radio("Frequency", options=list(FREQ_LABELS.keys()),
@@ -237,13 +236,25 @@ def page_landing(all_assets: List[str]):
     st.session_state["sel_asset"] = asset
     st.session_state["sel_freq"] = freq
 
+    # load metrics
     mb, mk = load_metrics(asset, freq)
+
     st.subheader("Availability Check")
     a1, a2 = st.columns(2)
     with a1:
-        st.write("Baseline Metrics:"); st.success("Found") if mb is not None else st.warning("Missing")
+        st.subheader("Baseline Metrics")
+        if mb is not None:
+            st.success("Found")
+            st.dataframe(mb)
+        else:
+            st.warning("Missing")
     with a2:
-        st.write("Keyword Metrics:"); st.success("Found") if mk is not None else st.info("Not yet generated (Phase 2)")
+        st.subheader("Keyword Metrics")
+        if mk is not None:
+            st.success("Found")
+            st.dataframe(mk)
+        else:
+            st.info("Not yet generated (Phase 2)")
 
     avail = discover_strategies(asset, freq)
     st.write("Detected strategies:", ", ".join(avail) if avail else "(none)")
@@ -271,14 +282,14 @@ def page_compare(all_assets: List[str]):
             st.dataframe(mb)
         else:
             st.info("metrics_baseline_* not found")
-
     with c2:
         st.subheader("Keyword Metrics")
         if mk is not None:
             st.dataframe(mk)
         else:
-            st.info("metrics_keywords_* not found (generate Phase 2)")
+            st.info("metrics_keywords_* not found (Phase 2)")
 
+    # KPI comparison
     st.subheader("KPI Δ (Keywords - Baseline)")
     d_auc = d_acc = None
     if mb is not None and mk is not None:
@@ -303,6 +314,7 @@ def page_compare(all_assets: List[str]):
         if d_acc is not None and not np.isnan(d_acc): deltas["Accuracy"] = d_acc
         if deltas: plot_delta_bars(deltas, f"{asset} {FREQ_LABELS[freq]}")
 
+    # figs
     st.subheader("Equity Overlay (figs)")
     fig_paths = find_equity_figs(asset, freq)
     if fig_paths:
@@ -313,6 +325,7 @@ def page_compare(all_assets: List[str]):
     else:
         st.caption("No equity figures found under figs/.")
 
+    # leaderboard
     st.subheader("Leaderboard (optional)")
     lb = load_leaderboard(asset, freq)
     if lb is not None:
@@ -427,7 +440,6 @@ def page_diagnostics(all_assets: List[str]):
 # -------------------------------------------------------------
 # App entry
 # -------------------------------------------------------------
-
 def main():
     st.set_page_config(page_title=APP_TITLE, layout="wide")
     st.title(APP_TITLE)
