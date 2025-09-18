@@ -1,7 +1,1 @@
-asset,dataset,model,strategy,auc,accuracy,trades,run_id,type,freq
-GOLD,eng_ext,LSTM,conservative,0.6023584905660377,0.4436090225563909,4,w_prod_20250914-054312,keywords,W
-GOLD,eng_ext,LSTM,balanced,0.6023584905660377,0.5413533834586466,4,w_prod_20250914-054312,keywords,W
-GOLD,eng_ext,LSTM,aggressive,0.6023584905660377,0.5939849624060151,4,w_prod_20250914-054312,keywords,W
-OIL,raw_ext,MLP,conservative,0.6329715061058344,0.5488721804511278,18,w_prod_20250914-054312,keywords,W
-OIL,raw_ext,MLP,balanced,0.6329715061058344,0.6165413533834586,23,w_prod_20250914-054312,keywords,W
-OIL,raw_ext,MLP,aggressive,0.6329715061058344,0.5789473684210527,28,w_prod_20250914-054312,keywords,W
+

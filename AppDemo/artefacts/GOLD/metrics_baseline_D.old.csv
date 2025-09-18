@@ -1,4 +1,0 @@
-asset,dataset,model,strategy,auc,accuracy,trades,run_id
-Gold,raw_base,XGB,conservative,0.5321458921105409,0.4791666666666667,95,d_prod_20250914-055550
-Gold,raw_base,XGB,balanced,0.5321458921105409,0.484375,97,d_prod_20250914-055550
-Gold,raw_base,XGB,aggressive,0.5321458921105409,0.484375,109,d_prod_20250914-055550
