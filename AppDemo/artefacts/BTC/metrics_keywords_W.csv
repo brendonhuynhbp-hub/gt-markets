@@ -1,13 +1,1 @@
-asset,freq,strategy,Return_Ann,Vol_Ann,Sharpe,MaxDD
-BTC,W,KW_GRU_w30_BASE,0.0,,,0.0
-BTC,W,KW_GRU_w30_EXT,0.0,,,0.0
-BTC,W,KW_LR_BASE,0.0,,,0.0
-BTC,W,KW_LR_EXT,0.0,,,0.0
-BTC,W,KW_LSTM_w30_BASE,0.0,,,0.0
-BTC,W,KW_LSTM_w30_EXT,0.0,,,0.0
-BTC,W,KW_MLP_w30_BASE,0.0,,,0.0
-BTC,W,KW_MLP_w30_EXT,0.0,,,0.0
-BTC,W,KW_RF_BASE,0.0,,,0.0
-BTC,W,KW_RF_EXT,0.0,,,0.0
-BTC,W,KW_XGB_BASE,0.0,,,0.0
-BTC,W,KW_XGB_EXT,0.0,,,0.0
+type,asset,freq,strategy,model,split,Return_Ann,Sharpe,WinRate,MaxDD,N_Trades
