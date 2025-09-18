@@ -7,14 +7,14 @@
 # 4) Signals & Audit
 # 5) Diagnostics
 #
-# Data layout (ARTE_ROOT defaults to ./AppDemo/artefacts):
+# Data layout (ARTE_ROOT defaults to ./AppDemo/artefacts, with Google Drive fallback):
 #   artefacts/<ASSET>/
 #       metrics_baseline_D.csv
-#       metrics_keywords_D.csv   (optional until Phase 2)
 #       metrics_baseline_W.csv
+#       metrics_keywords_D.csv   (optional until Phase 2)
 #       metrics_keywords_W.csv   (optional until Phase 2)
-#       signals_<STRATEGY>_D.csv
-#       signals_<STRATEGY>_W.csv
+#       signals_<STRATEGY>_D.csv (optional)
+#       signals_<STRATEGY>_W.csv (optional)
 #       leaderboard_{D|W}.csv    (optional)
 #       features_used.txt        (optional)
 #       figs/*_{D|W}.png         (optional)
@@ -34,42 +34,30 @@ import streamlit as st
 import matplotlib.pyplot as plt
 
 # -------------------------------------------------------------
-# Config
+# Config & Paths
 # -------------------------------------------------------------
 APP_TITLE = "GT Markets – Demo App"
-ARTE_ROOT = Path(os.environ.get("ARTE_ROOT", "AppDemo/artefacts"))
 
-import streamlit as st
+DEFAULT_ROOT = Path("AppDemo/artefacts")
+GDRIVE_ROOT  = Path("/content/drive/MyDrive/gt-markets/AppDemo/artefacts")
 
-_required = {
-    "GOLD": ["metrics_baseline_D.csv","metrics_baseline_W.csv","metrics_keywords_D.csv","metrics_keywords_W.csv"],
-    "BTC":  ["metrics_baseline_D.csv","metrics_baseline_W.csv","metrics_keywords_D.csv","metrics_keywords_W.csv"],
-    "OIL":  ["metrics_baseline_D.csv","metrics_baseline_W.csv","metrics_keywords_D.csv","metrics_keywords_W.csv"],
-    "USDCNY":["metrics_baseline_D.csv","metrics_baseline_W.csv","metrics_keywords_D.csv","metrics_keywords_W.csv"],
-}
-
-missing = []
-if not ARTE_ROOT.exists():
-    st.error(f"Artefacts folder not found: {ARTE_ROOT}")
-else:
-    for asset, files in _required.items():
-        for f in files:
-            if not (ARTE_ROOT/asset/f).exists():
-                missing.append(f"{asset}/{f}")
-
-if missing:
-    st.warning("Missing artefact files:\n" + "\n".join(missing))
+# Allow override via env var; otherwise use DEFAULT_ROOT, with fallback to GDRIVE_ROOT if present
+ARTE_ROOT = Path(os.environ.get("ARTE_ROOT", str(DEFAULT_ROOT)))
+if not ARTE_ROOT.exists() and GDRIVE_ROOT.exists():
+    ARTE_ROOT = GDRIVE_ROOT
 
 KEYWORD_DIR = Path("keyword_sets")
 KEYWORD_FILE = KEYWORD_DIR / "keyword_sets.json"
+KEYWORD_DIR.mkdir(parents=True, exist_ok=True)
 
 ASSET_ORDER = ["GOLD", "BTC", "OIL", "USDCNY"]
 FREQ_LABELS = {"D": "Daily", "W": "Weekly"}
 
-KEYWORD_DIR.mkdir(parents=True, exist_ok=True)
+# Only baseline files are *required* for Phase 1
+REQUIRED_BASELINE = ["metrics_baseline_D.csv", "metrics_baseline_W.csv"]
 
 # -------------------------------------------------------------
-# Helpers
+# Cached helpers
 # -------------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def list_assets(arte_root: Path) -> List[str]:
@@ -80,11 +68,11 @@ def list_assets(arte_root: Path) -> List[str]:
     rest = [a for a in assets if a not in ASSET_ORDER]
     return order + rest
 
-
 def _csv_safe_read(path: Path) -> Optional[pd.DataFrame]:
     try:
         if path.exists():
             df = pd.read_csv(path)
+            # best-effort date parsing
             for c in ["Date", "date", "timestamp", "time"]:
                 if c in df.columns:
                     df[c] = pd.to_datetime(df[c], errors="ignore")
@@ -93,7 +81,6 @@ def _csv_safe_read(path: Path) -> Optional[pd.DataFrame]:
         st.warning(f"Failed to read {path.name} — {e}")
     return None
 
-
 @st.cache_data(show_spinner=False)
 def load_metrics(asset: str, freq: str):
     root = ARTE_ROOT / asset
@@ -101,18 +88,15 @@ def load_metrics(asset: str, freq: str):
     mk = root / f"metrics_keywords_{freq}.csv"
     return _csv_safe_read(mb), _csv_safe_read(mk)
 
-
 @st.cache_data(show_spinner=False)
 def load_signals(asset: str, strategy: str, freq: str):
     root = ARTE_ROOT / asset
     sig = root / f"signals_{strategy}_{freq}.csv"
     return _csv_safe_read(sig)
 
-
 @st.cache_data(show_spinner=False)
 def load_leaderboard(asset: str, freq: str):
     return _csv_safe_read(ARTE_ROOT / asset / f"leaderboard_{freq}.csv")
-
 
 @st.cache_data(show_spinner=False)
 def load_features_text(asset: str):
@@ -124,14 +108,12 @@ def load_features_text(asset: str):
             return path.read_text(errors="ignore")
     return None
 
-
 @st.cache_data(show_spinner=False)
 def find_equity_figs(asset: str, freq: str) -> List[Path]:
     figs_dir = ARTE_ROOT / asset / "figs"
     if not figs_dir.exists():
         return []
     return sorted([p for p in figs_dir.glob(f"*_{freq}.png")])
-
 
 @st.cache_data(show_spinner=False)
 def discover_strategies(asset: str, freq: str) -> List[str]:
@@ -146,7 +128,6 @@ def discover_strategies(asset: str, freq: str) -> List[str]:
             names.add("_".join(parts[1:-1]))
     return sorted(names)
 
-
 # -------------------------------------------------------------
 # Keyword sets
 # -------------------------------------------------------------
@@ -156,7 +137,6 @@ DEFAULT_KEYWORD_SETS = {
     "core_btc": {"asset": "BTC", "freq": "D",
                  "keywords": ["bitcoin", "crypto fear", "halving", "btc etf"]},
 }
-
 
 def _load_keyword_sets() -> Dict[str, Dict]:
     if not KEYWORD_FILE.exists():
@@ -168,10 +148,8 @@ def _load_keyword_sets() -> Dict[str, Dict]:
         st.warning(f"Failed to read keyword_sets.json — using defaults. Error: {e}")
         return DEFAULT_KEYWORD_SETS
 
-
 def _save_keyword_sets(data: Dict[str, Dict]) -> None:
     KEYWORD_FILE.write_text(json.dumps(data, indent=2))
-
 
 # -------------------------------------------------------------
 # UI helpers
@@ -181,7 +159,6 @@ def kpi_badge(label: str, value: Optional[float], fmt: str = "{:.4f}"):
         st.metric(label, "–")
     else:
         st.metric(label, fmt.format(value))
-
 
 def verdict_from_deltas(d_auc: Optional[float], d_acc: Optional[float]) -> str:
     if d_auc is None and d_acc is None:
@@ -200,7 +177,6 @@ def verdict_from_deltas(d_auc: Optional[float], d_acc: Optional[float]) -> str:
         return "No Value"
     return "Inconclusive"
 
-
 def plot_delta_bars(d: Dict[str, float], title: str):
     fig, ax = plt.subplots()
     names = list(d.keys())
@@ -210,7 +186,6 @@ def plot_delta_bars(d: Dict[str, float], title: str):
     ax.set_title(title)
     ax.set_ylabel("Δ (Keywords - Baseline)")
     st.pyplot(fig)
-
 
 def plot_signals_step(df: pd.DataFrame, time_col: Optional[str] = None,
                       signal_col: Optional[str] = None,
@@ -227,8 +202,7 @@ def plot_signals_step(df: pd.DataFrame, time_col: Optional[str] = None,
                 signal_col = c
                 break
     if time_col is None or signal_col is None:
-        st.info("""Cannot infer time/signal column to plot step chart.
-Hint: expected columns like 'Date' and 'signal'.""")
+        st.info("Cannot infer time/signal columns. Expected 'Date' and 'signal'.")
         return
     df2 = df.tail(20).copy()
     fig, ax = plt.subplots()
@@ -239,6 +213,18 @@ Hint: expected columns like 'Date' and 'signal'.""")
     plt.xticks(rotation=25)
     st.pyplot(fig)
 
+def soft_missing_report():
+    """Soft check for missing baseline files (no Streamlit calls before set_page_config)."""
+    if not ARTE_ROOT.exists():
+        st.error(f"Artefacts folder not found: {ARTE_ROOT}")
+        return
+    missing_lines = []
+    for asset in list_assets(ARTE_ROOT):
+        for req in REQUIRED_BASELINE:
+            if not (ARTE_ROOT / asset / req).exists():
+                missing_lines.append(f"{asset}/{req}")
+    if missing_lines:
+        st.warning("Missing baseline artefact files:\n" + "\n".join(missing_lines))
 
 # -------------------------------------------------------------
 # Pages
@@ -269,7 +255,7 @@ def page_landing(all_assets: List[str]):
             st.success("Found")
             st.dataframe(mb)
         else:
-            st.warning("Missing")
+            st.warning("Missing metrics_baseline_*")
     with a2:
         st.subheader("Keyword Metrics")
         if mk is not None:
@@ -280,7 +266,6 @@ def page_landing(all_assets: List[str]):
 
     avail = discover_strategies(asset, freq)
     st.write("Detected strategies:", ", ".join(avail) if avail else "(none)")
-
 
 def page_compare(all_assets: List[str]):
     st.header("Compare — Baseline vs Keywords")
@@ -311,7 +296,7 @@ def page_compare(all_assets: List[str]):
         else:
             st.info("metrics_keywords_* not found (Phase 2)")
 
-    # KPI comparison
+    # KPI comparison (if both present)
     st.subheader("KPI Δ (Keywords - Baseline)")
     d_auc = d_acc = None
     if mb is not None and mk is not None:
@@ -355,7 +340,6 @@ def page_compare(all_assets: List[str]):
     else:
         st.caption("leaderboard_* not provided.")
 
-
 def page_keyword_lab(all_assets: List[str]):
     st.header("Keyword Lab")
     sets = _load_keyword_sets()
@@ -394,7 +378,6 @@ def page_keyword_lab(all_assets: List[str]):
             _save_keyword_sets(sets)
             st.success(f"Deleted {del_name}.")
             st.cache_data.clear()
-
 
 def page_signals_audit(all_assets: List[str]):
     st.header("Signals & Audit")
@@ -435,7 +418,6 @@ def page_signals_audit(all_assets: List[str]):
     else:
         st.caption("No features_used.txt found (optional).")
 
-
 def page_diagnostics(all_assets: List[str]):
     st.header("Diagnostics")
     st.write("ARTE_ROOT:", str(ARTE_ROOT.resolve()))
@@ -447,25 +429,36 @@ def page_diagnostics(all_assets: List[str]):
     for a in assets:
         st.subheader(a.name)
         missing = []
-        for req in ["metrics_baseline_D.csv", "metrics_baseline_W.csv"]:
+        for req in REQUIRED_BASELINE:
             if not (a / req).exists():
                 missing.append(req)
         for f in ["D", "W"]:
             if not list(a.glob(f"signals_*_{f}.csv")):
                 missing.append(f"signals_*_{f}.csv (at least one)")
+        # Keywords are optional; report softly
+        kw_soft = []
+        for f in ["D", "W"]:
+            if not (a / f"metrics_keywords_{f}.csv").exists():
+                kw_soft.append(f"metrics_keywords_{f}.csv (optional)")
         if missing:
-            st.warning(f"Missing: {missing}")
+            st.warning(f"Missing baseline/signals: {missing}")
         else:
-            st.success("All baseline files present ✅")
-
+            st.success("Baseline & signals present ✅")
+        if kw_soft:
+            st.caption(f"Not found (optional, Phase 2): {kw_soft}")
 
 # -------------------------------------------------------------
 # App entry
 # -------------------------------------------------------------
 def main():
+    # IMPORTANT: First Streamlit call must be set_page_config
     st.set_page_config(page_title=APP_TITLE, layout="wide")
+
     st.title(APP_TITLE)
     st.caption(f"Artefacts root: {ARTE_ROOT.resolve()}")
+
+    # Soft artefact check (after page config)
+    soft_missing_report()
 
     assets = list_assets(ARTE_ROOT)
 
@@ -485,7 +478,6 @@ def main():
         page_signals_audit(assets)
     elif page == "Diagnostics":
         page_diagnostics(assets)
-
 
 if __name__ == "__main__":
     main()
