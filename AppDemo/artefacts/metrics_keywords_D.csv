@@ -1,1 +1,7 @@
-
+asset,dataset,model,strategy,auc,accuracy,trades,run_id,type,freq
+GOLD,raw_ext,LSTM,conservative,0.537719945945193,0.4703557312252964,11,d_prod_20250914-055550,keywords,D
+GOLD,raw_ext,LSTM,balanced,0.537719945945193,0.4743083003952569,13,d_prod_20250914-055550,keywords,D
+GOLD,raw_ext,LSTM,aggressive,0.537719945945193,0.52832674571805,40,d_prod_20250914-055550,keywords,D
+OIL,raw_ext,GRU,conservative,0.556796696880387,0.544137022397892,57,d_prod_20250914-055550,keywords,D
+OIL,raw_ext,GRU,balanced,0.556796696880387,0.5335968379446641,89,d_prod_20250914-055550,keywords,D
+OIL,raw_ext,GRU,aggressive,0.556796696880387,0.5507246376811594,115,d_prod_20250914-055550,keywords,D
