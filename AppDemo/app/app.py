@@ -21,6 +21,87 @@ import streamlit as st
 APP_TITLE = "📊 GT Markets – Demo App"
 ENV_ARTEFACTS = os.environ.get("ARTEFACTS_ROOT", "").strip()
 
+# --- Debug helpers (put near the top of app.py) ---
+import os, io, glob, textwrap
+from pathlib import Path
+import pandas as pd
+import streamlit as st
+
+def resolve_artefacts_root() -> Path:
+    """
+    Robust artefacts root resolver:
+    1) GT_ARTEFACTS_ROOT env (if set)
+    2) ./AppDemo/artefacts (repo root)
+    3) ../AppDemo/artefacts (one level up; handles repos where app.py lives in a subfolder)
+    4) ../../AppDemo/artefacts (two up; handles /mount/src/gt-markets/AppDemo/artefacts)
+    """
+    env = os.getenv("GT_ARTEFACTS_ROOT")
+    if env:
+        p = Path(env)
+        if p.exists():
+            return p
+
+    here = Path(__file__).resolve().parent
+    candidates = [
+        here / "AppDemo" / "artefacts",
+        here.parent / "AppDemo" / "artefacts",
+        here.parent.parent / "AppDemo" / "artefacts",
+    ]
+    for p in candidates:
+        if p.exists():
+            return p
+
+    # Last resort: search up to 3 levels for a matching folder
+    for up in [here, here.parent, here.parent.parent]:
+        for match in up.rglob("AppDemo/artefacts"):
+            if match.is_dir():
+                return match
+
+    # Fall back to the first candidate (even if missing) so the UI shows what it tried
+    return candidates[0]
+
+ARTE = resolve_artefacts_root()
+st.caption(f"Artefacts root:  `{ARTE}`")
+
+def debug_list_dir(root: Path):
+    try:
+        files = []
+        for f in sorted(root.glob("**/*.csv")):
+            try:
+                size = f.stat().st_size
+            except Exception:
+                size = -1
+            files.append((str(f.relative_to(root)), size))
+        if not files:
+            st.warning("No CSV files found under artefacts root.")
+        else:
+            st.code("\n".join([f"{nm}  ({sz} bytes)" for nm, sz in files]), language="text")
+    except Exception as e:
+        st.exception(e)
+
+def safe_read_csv(path: Path) -> pd.DataFrame:
+    """Defensive CSV loader with better error messages in the UI."""
+    if not path.exists():
+        st.error(f"Missing file: {path.name}")
+        return pd.DataFrame()
+    try:
+        if path.stat().st_size == 0:
+            st.error(f"Empty file: {path.name}")
+            return pd.DataFrame()
+    except Exception:
+        pass
+    try:
+        return pd.read_csv(path)
+    except Exception as e:
+        # Show first few bytes to catch HTML/redirects or bad encodings
+        try:
+            head = path.open("rb").read(200)
+            st.error(f"Failed to read {path.name}: {e}")
+            st.code(head, language="text")
+        except Exception:
+            st.error(f"Failed to read {path.name}: {e}")
+        return pd.DataFrame()
+
 # ---------------- Path helpers ----------------
 
 def _candidate_roots() -> List[Path]:
