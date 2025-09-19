@@ -125,13 +125,50 @@ def files_in(folder: Path, pattern: str) -> List[Path]:
 ASSETS = ["GOLD", "BTC", "OIL", "USDCNY"]
 FREQS = ["D", "W"]
 
+def _read_per_asset_kw(root: Path, freq: str) -> pd.DataFrame:
+    """Build root keyword metrics by concatenating per-asset files.
+    Skips header-only files (tiny size) and adds missing 'asset'/'freq' columns.
+    """
+    parts = []
+    for asset_dir in sorted([p for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")]):
+        f = asset_dir / f"metrics_keywords_{freq}.csv"
+        # Treat <20 bytes as header-only; skip
+        if not f.exists() or f.stat().st_size < 20:
+            continue
+        df = safe_read_csv(f)
+        if df.empty:
+            continue
+        if "asset" not in df.columns:
+            df["asset"] = asset_dir.name
+        if "freq" not in df.columns:
+            df["freq"] = freq
+        parts.append(df)
+    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+
 def load_root_tables(root: Path) -> dict:
+    # Baselines (read as-is)
+    base_D = safe_read_csv(root / "metrics_summary_D.csv")
+    base_W = safe_read_csv(root / "metrics_summary_W.csv")
+
+    # Root keyword files (may be empty/header-only in your deploy)
+    kwD_path = root / "metrics_keywords_D.csv"
+    kwW_path = root / "metrics_keywords_W.csv"
+    kw_D = safe_read_csv(kwD_path)
+    kw_W = safe_read_csv(kwW_path)
+
+    # Fallback to per-asset concat if root files are empty or tiny
+    if kw_D.empty or (kwD_path.exists() and kwD_path.stat().st_size < 20):
+        kw_D = _read_per_asset_kw(root, "D")
+    if kw_W.empty or (kwW_path.exists() and kwW_path.stat().st_size < 20):
+        kw_W = _read_per_asset_kw(root, "W")
+
     return {
-        "baseline_D": safe_read_csv(root / "metrics_summary_D.csv"),
-        "baseline_W": safe_read_csv(root / "metrics_summary_W.csv"),
-        "kw_D":       safe_read_csv(root / "metrics_keywords_D.csv"),
-        "kw_W":       safe_read_csv(root / "metrics_keywords_W.csv"),
+        "baseline_D": base_D,
+        "baseline_W": base_W,
+        "kw_D": kw_D,
+        "kw_W": kw_W,
     }
+
 
 def discover_assets(root: Path) -> List[str]:
     out = []
