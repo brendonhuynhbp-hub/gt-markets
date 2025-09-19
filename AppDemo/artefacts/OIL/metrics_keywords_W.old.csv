@@ -1,4 +1,0 @@
-asset,dataset,model,strategy,auc,accuracy,trades,run_id
-Oil,raw_ext,MLP,conservative,0.6329715061058344,0.5488721804511278,18,w_prod_20250914-054312
-Oil,raw_ext,MLP,balanced,0.6329715061058344,0.6165413533834586,23,w_prod_20250914-054312
-Oil,raw_ext,MLP,aggressive,0.6329715061058344,0.5789473684210527,28,w_prod_20250914-054312

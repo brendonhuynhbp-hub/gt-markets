@@ -1,4 +1,0 @@
-asset,dataset,model,strategy,auc,accuracy,trades,run_id
-Gold,raw_ext,LSTM,conservative,0.537719945945193,0.47035573122529645,11,d_prod_20250914-055550
-Gold,raw_ext,LSTM,balanced,0.537719945945193,0.4743083003952569,13,d_prod_20250914-055550
-Gold,raw_ext,LSTM,aggressive,0.537719945945193,0.52832674571805,40,d_prod_20250914-055550
