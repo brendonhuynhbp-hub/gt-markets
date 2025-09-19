@@ -1,0 +1,3 @@
+asset,freq,type,strategy,model,window,threshold,return,cagr,max_drawdown,sharpe,trades
+USDCNY,W,BASELINE,SMA,,20,,0.219,0.02,-0.0492,,
+USDCNY,W,BASELINE,EMA,,20,,0.2189,0.02,-0.0494,,

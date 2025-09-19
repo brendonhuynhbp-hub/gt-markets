@@ -1,0 +1,3 @@
+asset,freq,type,strategy,model,window,threshold,return,cagr,max_drawdown,sharpe,trades
+GOLD,D,BASELINE,EMA,,20,,0.5323,0.0436,-0.2792,,
+GOLD,D,BASELINE,SMA,,20,,0.3466,0.0302,-0.2429,,
