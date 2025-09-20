@@ -1,181 +1,206 @@
-# app.py — GT Markets · Interactive Metrics Table + Comparison
-import streamlit as st
-import pandas as pd
+# AppDemo/app/app.py
+from __future__ import annotations
+
+import os
 from pathlib import Path
+from typing import Literal, Tuple
 
-# =========================
-# Config
-# =========================
-ARTEFACTS_DIR = Path(__file__).resolve().parent.parent / "artefacts"
+import pandas as pd
+import streamlit as st
 
-# =========================
-# Helpers
-# =========================
-def load_metrics(kind: str, freq: str) -> pd.DataFrame:
-    """
-    Load metrics CSV by kind ('baseline' or 'keywords') and freq ('D' or 'W').
-    Normalizes columns for clean comparison.
-    """
-    fname = f"metrics_{kind}_{freq}.csv"
-    fpath = ARTEFACTS_DIR / fname
-    if not fpath.exists():
-        return pd.DataFrame()
 
-    df = pd.read_csv(fpath)
+# ===== Paths =====
+# Repo layout: AppDemo/app/app.py  <-- this file
+#              AppDemo/artefacts   <-- metrics live here
+HERE = Path(__file__).resolve()
+APP_ROOT = HERE.parent
+DEMO_ROOT = APP_ROOT.parent
+ARTEFACTS_DIR = Path(
+    os.getenv("ARTEFACTS_DIR", DEMO_ROOT / "artefacts")
+).resolve()
 
-    # Normalize column names
-    df.columns = [c.strip().lower() for c in df.columns]
+# ===== UI =====
+st.set_page_config(page_title="GT Markets · Model & Strategy Metrics", layout="wide")
+st.title("Model & Strategy Metrics")
+st.caption(f"Artefacts: `{ARTEFACTS_DIR}`")
 
-    # Ensure required cols exist
-    expected = {"market", "freq", "strategy", "sharpe", "return", "hitrate", "maxdd"}
-    missing = expected - set(df.columns)
-    if missing:
-        st.warning(f"{fname} missing columns: {missing}")
-        return pd.DataFrame()
+kind = st.radio(
+    "Metrics type",
+    options=["baseline", "keywords", "baseline + keywords"],
+    index=2,
+    horizontal=False,
+)
 
-    # Clean core identity cols
-    df["market"] = df["market"].str.upper()
-    df["freq"] = freq
-    df["strategy"] = df["strategy"].str.upper()
+freq = st.radio(
+    "Frequency",
+    options=[("Daily (D)", "D"), ("Weekly (W)", "W")],
+    index=0,
+    format_func=lambda x: x[0],
+    horizontal=False,
+)
+freq_code = freq[1]
 
-    # Keywords: may have source + model
-    if kind == "keywords":
-        if "source" not in df.columns:
-            df["source"] = "—"
-        else:
-            df["source"] = df["source"].astype(str).str.upper().replace({"BASE": "BASE", "EXT": "EXT"})
-        if "model" not in df.columns:
-            df["model"] = "—"
-        else:
-            df["model"] = df["model"].astype(str).str.upper()
-    else:
-        df["source"] = "—"
-        df["model"] = "—"
 
-    # Numeric cols
-    for col in ["sharpe", "return", "hitrate", "maxdd"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
+# ===== Helpers =====
+REQUIRED_ANY = {"type", "asset", "freq", "strategy"}
+# We’ll normalize your current column names to these canonical ones.
+CANON_COLS = {
+    # current -> canonical
+    "Return_Ann": "return",
+    "WinRate": "hitrate",
+    "Sharpe": "sharpe",
+    "MaxDD": "maxdd",
+    # already-canonical examples (no-op if present)
+    "return": "return",
+    "hitrate": "hitrate",
+    "sharpe": "sharpe",
+    "maxdd": "maxdd",
+    "model": "model",
+    "market": "market",
+}
+
+
+def load_csv_safely(p: Path) -> pd.DataFrame | None:
+    if not p.exists():
+        st.warning(f"`{p.name}` not found in artefacts.")
+        return None
+    try:
+        df = pd.read_csv(p)
+    except Exception as e:
+        st.error(f"Failed to read `{p.name}`: {e}")
+        return None
+    if df.empty:
+        st.warning(f"`{p.name}` is empty.")
+        return None
+    return df
+
+
+def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    # Ensure basic identity columns exist
+    missing_any = REQUIRED_ANY - set(df.columns)
+    if missing_any:
+        # Some old files might use different casing; try to recover.
+        lower = {c.lower(): c for c in df.columns}
+        fixes = {}
+        for need in REQUIRED_ANY:
+            if need not in df.columns and need in lower:
+                fixes[lower[need]] = need
+        if fixes:
+            df = df.rename(columns=fixes)
+
+    # Map current names -> canonical names (without dropping originals)
+    rename_map = {c: CANON_COLS[c] for c in df.columns if c in CANON_COLS and CANON_COLS[c] != c}
+    if rename_map:
+        df = df.rename(columns=rename_map)
+
+    # If expected canonical metrics are still missing, create nullable placeholders
+    for col in ["return", "hitrate", "sharpe", "maxdd"]:
+        if col not in df.columns:
+            df[col] = pd.NA
+
+    # Convert numerics if present
+    for col in ["return", "hitrate", "sharpe", "maxdd"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Make sure string-ish columns are strings (prevents .str accessor errors)
+    for col in ["type", "asset", "freq", "strategy", "model"]:
+        if col in df.columns:
+            df[col] = df[col].astype("string")
+
+    # Optional column: market (benchmark). If missing, we won’t require it.
+    if "market" in df.columns:
+        df["market"] = pd.to_numeric(df["market"], errors="coerce")
 
     return df
 
 
-def combine_with_deltas(df_base: pd.DataFrame, df_kw: pd.DataFrame) -> pd.DataFrame:
-    """
-    Merge baseline + keywords and compute deltas.
-    """
-    all_rows = []
+def load_metrics(
+    artefacts_dir: Path, which: Literal["baseline", "keywords", "both"], freq_code: Literal["D", "W"]
+) -> Tuple[pd.DataFrame | None, list[str]]:
+    msgs: list[str] = []
+    paths = []
+    if which in ("baseline", "both"):
+        paths.append(artefacts_dir / f"metrics_baseline_{freq_code}.csv")
+    if which in ("keywords", "both"):
+        paths.append(artefacts_dir / f"metrics_keywords_{freq_code}.csv")
 
-    for _, b in df_base.iterrows():
-        anchor = (b["market"], b["freq"], b["strategy"])
-        all_rows.append(
-            {
-                "Market": b["market"],
-                "Freq": b["freq"],
-                "Strategy": b["strategy"],
-                "Source": "—",
-                "Model": "—",
-                "Sharpe": b["sharpe"],
-                "Return %": b["return"],
-                "HitRate %": b["hitrate"],
-                "MaxDD %": b["maxdd"],
-                "ΔSharpe": None,
-                "ΔReturn pp": None,
-                "ΔHitRate pp": None,
-                "ΔMaxDD pp": None,
-            }
-        )
+    frames = []
+    for p in paths:
+        df = load_csv_safely(p)
+        if df is None:
+            continue
+        df = normalize_columns(df)
 
-        # Matching keyword rows
-        match = df_kw[
-            (df_kw["market"] == b["market"])
-            & (df_kw["freq"] == b["freq"])
-            & (df_kw["strategy"] == b["strategy"])
-        ]
-        for _, k in match.iterrows():
-            all_rows.append(
-                {
-                    "Market": k["market"],
-                    "Freq": k["freq"],
-                    "Strategy": k["strategy"],
-                    "Source": k["source"],
-                    "Model": k["model"],
-                    "Sharpe": k["sharpe"],
-                    "Return %": k["return"],
-                    "HitRate %": k["hitrate"],
-                    "MaxDD %": k["maxdd"],
-                    "ΔSharpe": k["sharpe"] - b["sharpe"] if pd.notna(k["sharpe"]) and pd.notna(b["sharpe"]) else None,
-                    "ΔReturn pp": k["return"] - b["return"] if pd.notna(k["return"]) and pd.notna(b["return"]) else None,
-                    "ΔHitRate pp": k["hitrate"] - b["hitrate"] if pd.notna(k["hitrate"]) and pd.notna(b["hitrate"]) else None,
-                    "ΔMaxDD pp": k["maxdd"] - b["maxdd"] if pd.notna(k["maxdd"]) and pd.notna(b["maxdd"]) else None,
-                }
-            )
+        # Minimal schema guard for display; do not require 'market'
+        needed = REQUIRED_ANY | {"return", "hitrate"}
+        missing = needed - set(df.columns)
+        if missing:
+            msgs.append(f"`{p.name}` missing columns: {sorted(missing)}")
+        frames.append(df)
 
-    return pd.DataFrame(all_rows)
+    if not frames:
+        return None, msgs
+
+    out = pd.concat(frames, ignore_index=True)
+    return out, msgs
 
 
-def format_table(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Apply number formatting and arrows/colors for deltas.
-    """
-    def fmt_num(x, digits=2, pct=False):
-        if pd.isna(x):
-            return "—"
-        return f"{x:.{digits}f}{'%' if pct else ''}"
+# ===== Load & Filter =====
+which = (
+    "baseline"
+    if kind == "baseline"
+    else "keywords"
+    if kind == "keywords"
+    else "both"
+)
 
-    def fmt_delta(x, inverse=False):
-        if pd.isna(x):
-            return "—"
-        arrow = "↑" if (x > 0 and not inverse) or (x < 0 and inverse) else "↓" if x != 0 else "→"
-        color = "green" if (x > 0 and not inverse) or (x < 0 and inverse) else "red" if x != 0 else "grey"
-        return f"<span style='color:{color}'>{arrow} {x:.2f}</span>"
+df_all, notes = load_metrics(ARTEFACTS_DIR, which, freq_code)
 
-    out = df.copy()
-    out["Sharpe"] = out["Sharpe"].map(lambda v: fmt_num(v))
-    out["Return %"] = out["Return %"].map(lambda v: fmt_num(v, pct=True))
-    out["HitRate %"] = out["HitRate %"].map(lambda v: fmt_num(v, pct=True))
-    out["MaxDD %"] = out["MaxDD %"].map(lambda v: fmt_num(v, pct=True))
+if notes:
+    for m in notes:
+        st.warning(m)
 
-    out["ΔSharpe"] = out["ΔSharpe"].map(lambda v: fmt_delta(v))
-    out["ΔReturn pp"] = out["ΔReturn pp"].map(lambda v: fmt_delta(v))
-    out["ΔHitRate pp"] = out["ΔHitRate pp"].map(lambda v: fmt_delta(v))
-    out["ΔMaxDD pp"] = out["ΔMaxDD pp"].map(lambda v: fmt_delta(v, inverse=True))
-
-    return out
-
-
-# =========================
-# Streamlit UI
-# =========================
-st.set_page_config(page_title="GT Markets · Metrics Comparison", layout="wide")
-st.title("GT Markets · Model & Strategy Metrics")
-
-kind = st.radio("Metrics type", ["baseline + keywords"], index=0)
-freq = st.radio("Frequency", ["D", "W"], index=0)
-
-df_base = load_metrics("baseline", freq)
-df_kw = load_metrics("keywords", freq)
-
-if df_base.empty and df_kw.empty:
+if df_all is None or df_all.empty:
     st.error("No metrics files found in artefacts.")
     st.stop()
 
-df_all = combine_with_deltas(df_base, df_kw)
+# Quick filters
+cols = st.columns(4)
+assets = sorted(df_all["asset"].dropna().unique().tolist()) if "asset" in df_all else []
+chosen_assets = cols[0].multiselect("Asset", assets, default=assets)
 
-# Sidebar filters
-markets = st.sidebar.multiselect("Market", sorted(df_all["Market"].unique()), default=sorted(df_all["Market"].unique()))
-strategies = st.sidebar.multiselect("Strategy", sorted(df_all["Strategy"].unique()), default=sorted(df_all["Strategy"].unique()))
-models = st.sidebar.multiselect("Model", sorted(df_all["Model"].unique()), default=sorted(df_all["Model"].unique()))
+strats = sorted(df_all["strategy"].dropna().unique().tolist()) if "strategy" in df_all else []
+chosen_strats = cols[1].multiselect("Strategy", strats, default=strats)
 
-df_filt = df_all[
-    df_all["Market"].isin(markets) & df_all["Strategy"].isin(strategies) & df_all["Model"].isin(models)
-]
+models = sorted(df_all["model"].dropna().unique().tolist()) if "model" in df_all else []
+default_models = models if models else []
+chosen_models = cols[2].multiselect("Model (if any)", models, default=default_models)
 
-# Sort by ΔSharpe then ΔReturn
-df_filt = df_filt.sort_values(by=["ΔSharpe", "ΔReturn pp"], ascending=[False, False])
+sort_by = cols[3].selectbox("Sort by", ["return", "sharpe", "hitrate", "maxdd"])
 
-# Format for display
-df_disp = format_table(df_filt)
+# Apply filters (guard if columns are absent)
+df_view = df_all.copy()
+if "asset" in df_view and chosen_assets:
+    df_view = df_view[df_view["asset"].isin(chosen_assets)]
+if "strategy" in df_view and chosen_strats:
+    df_view = df_view[df_view["strategy"].isin(chosen_strats)]
+if "model" in df_view and chosen_models and "model" in df_view.columns:
+    df_view = df_view[df_view["model"].isin(chosen_models)]
 
-st.markdown("### Metrics Table with Baseline vs Keywords Comparison")
-st.write("Baseline rows show raw metrics. Keyword rows show raw metrics + deltas vs the matching baseline.")
-st.write(df_disp.to_html(escape=False, index=False), unsafe_allow_html=True)
+# Order columns for display
+display_cols = [c for c in ["type", "asset", "freq", "strategy", "model", "return", "sharpe", "hitrate", "maxdd", "market"] if c in df_view.columns]
+if not display_cols:
+    display_cols = df_view.columns.tolist()
+
+# Sort (fallback if column missing)
+if sort_by in df_view.columns:
+    df_view = df_view.sort_values(sort_by, ascending=False, na_position="last")
+
+st.dataframe(df_view[display_cols], use_container_width=True, height=600)
+
+st.caption(
+    "Notes: This app accepts metrics files that export `Return_Ann` and `WinRate` "
+    "from the notebook; these are normalized to `return` and `hitrate` automatically. "
+    "`market` is optional."
+)
