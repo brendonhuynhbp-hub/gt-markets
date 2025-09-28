@@ -311,7 +311,7 @@ def keyword_explorer_tab(models: pd.DataFrame, asset: str, freq: str):
       - No dataset toggle (only Asset + Frequency)
       - KPI cards: Δ AUC (ext − base), Δ MAE (base − ext)
       - Split tables: Direction (AUC, Accuracy, F1) & Return (MAE, RMSE, Spearman)
-      - Collapsible heatmap of uplifts at the bottom
+      - Collapsible bar chart of uplifts at the bottom
     """
     st.subheader("Keyword Explorer")
 
@@ -391,26 +391,22 @@ def keyword_explorer_tab(models: pd.DataFrame, asset: str, freq: str):
     else:
         st.caption("No return metrics available.")
 
-    # Heatmap (collapsible)
-    with st.expander("Show heatmap of uplifts", expanded=False):
+    # Bar chart of uplifts (collapsible)
+    with st.expander("Show metric uplifts", expanded=False):
         metrics = [r["Metric"] for r in dir_rows + ret_rows]
         uplifts = [float(r["Δ"]) if not np.isnan(r["Δ"]) else 0.0 for r in dir_rows + ret_rows]
-
         if metrics:
             import plotly.graph_objects as go
-            z = np.array(uplifts, dtype=float).reshape(len(metrics), 1)
-            fig = go.Figure(data=go.Heatmap(
-                z=z,
-                x=["Δ"],
-                y=metrics,
-                colorbar=dict(title="Uplift"),
-                colorscale="RdBu",
-                zmid=0.0
-            ))
-            fig.update_layout(height=max(280, 24 * len(metrics) + 180), margin=dict(l=0, r=10, t=10, b=0))
+            # Colors by sign
+            colors = ["#2ca02c" if val >= 0 else "#d62728" for val in uplifts]
+            fig = go.Figure(data=[go.Bar(x=metrics, y=uplifts, marker=dict(color=colors))])
+            fig.update_layout(yaxis_title="Δ uplift", xaxis_title="Metric",
+                              margin=dict(l=0, r=10, t=10, b=0), height=360)
+            # Zero line
+            fig.update_yaxes(zeroline=True, zerolinewidth=1)
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.caption("No data for heatmap.")
+            st.caption("No data to chart.")
 
 
 def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, dataset_code: str):
