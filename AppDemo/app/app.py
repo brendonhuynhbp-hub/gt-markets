@@ -1,6 +1,6 @@
-import re
 # AppDemo/app/app.py
 from __future__ import annotations
+import re
 
 import json
 from pathlib import Path
