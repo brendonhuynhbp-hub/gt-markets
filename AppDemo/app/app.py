@@ -311,7 +311,7 @@ def keyword_explorer_tab(models: pd.DataFrame, asset: str, freq: str):
       - No dataset toggle (only Asset + Frequency)
       - KPI cards: Δ AUC (ext − base), Δ MAE (base − ext)
       - Split tables: Direction (AUC, Accuracy, F1) & Return (MAE, RMSE, Spearman)
-      - Collapsible bar chart of uplifts at the bottom
+      - Collapsible bar chart of NORMALISED uplifts at the bottom
     """
     st.subheader("Keyword Explorer")
 
@@ -391,18 +391,40 @@ def keyword_explorer_tab(models: pd.DataFrame, asset: str, freq: str):
     else:
         st.caption("No return metrics available.")
 
-    # Bar chart of uplifts (collapsible)
-    with st.expander("Show metric uplifts", expanded=False):
-        metrics = [r["Metric"] for r in dir_rows + ret_rows]
-        uplifts = [float(r["Δ"]) if not np.isnan(r["Δ"]) else 0.0 for r in dir_rows + ret_rows]
-        if metrics:
+    # Normalised uplift chart (single combined)
+    with st.expander("Show normalised uplifts (Δ% vs base)", expanded=False):
+        rows = []
+        if not (np.isnan(best_auc_b) and np.isnan(best_auc_e)):
+            rows.append(("AUC", best_auc_b, best_auc_e, "direction"))
+        if not (np.isnan(best_acc_b) and np.isnan(best_acc_e)):
+            rows.append(("Accuracy", best_acc_b, best_acc_e, "direction"))
+        if not (np.isnan(best_f1_b) and np.isnan(best_f1_e)):
+            rows.append(("F1", best_f1_b, best_f1_e, "direction"))
+        if not (np.isnan(best_mae_b) and np.isnan(best_mae_e)):
+            rows.append(("MAE", best_mae_b, best_mae_e, "return"))
+        if not (np.isnan(best_rmse_b) and np.isnan(best_rmse_e)):
+            rows.append(("RMSE", best_rmse_b, best_rmse_e, "return"))
+        if not (np.isnan(best_spear_b) and np.isnan(best_spear_e)):
+            rows.append(("Spearman", best_spear_b, best_spear_e, "return"))
+        if rows:
             import plotly.graph_objects as go
-            # Colors by sign
-            colors = ["#2ca02c" if val >= 0 else "#d62728" for val in uplifts]
-            fig = go.Figure(data=[go.Bar(x=metrics, y=uplifts, marker=dict(color=colors))])
-            fig.update_layout(yaxis_title="Δ uplift", xaxis_title="Metric",
-                              margin=dict(l=0, r=10, t=10, b=0), height=360)
-            # Zero line
+            metrics, pct, hover = [], [], []
+            for name, base_v, ext_v, family in rows:
+                if np.isnan(base_v) or base_v == 0:
+                    change = np.nan
+                else:
+                    if family == "direction":
+                        change = (ext_v - base_v) / base_v
+                    else:
+                        change = (base_v - ext_v) / base_v
+                metrics.append(name)
+                pct.append(change if not np.isnan(change) else 0.0)
+                hover.append(f"{name}: base={base_v:.4g}, ext={ext_v:.4g}, Δ%={(change*100 if not np.isnan(change) else 0):.2f}%")
+            colors = ["#2ca02c" if val >= 0 else "#d62728" for val in pct]
+            fig = go.Figure(data=[go.Bar(x=metrics, y=[v*100 for v in pct], text=[f"{v*100:.2f}%" for v in pct],
+                                         textposition="outside", marker=dict(color=colors), hovertext=hover, hoverinfo="text")])
+            fig.update_layout(yaxis_title="Δ vs base (%)", xaxis_title="Metric",
+                              margin=dict(l=0, r=10, t=10, b=0), height=420)
             fig.update_yaxes(zeroline=True, zerolinewidth=1)
             st.plotly_chart(fig, use_container_width=True)
         else:
