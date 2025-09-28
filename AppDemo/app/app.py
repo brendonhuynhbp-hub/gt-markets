@@ -306,16 +306,10 @@ def _uplift_color(v, thr=0.002):
         return "color: inherit"
 
 def keyword_explorer_tab(models: pd.DataFrame, asset: str, freq: str):
-    """
-    Keyword Explorer (redesigned):
-      - No dataset toggle (only Asset + Frequency)
-      - KPI cards: Δ AUC (ext − base), Δ MAE (base − ext)
-      - Split tables: Direction (AUC, Accuracy, F1) & Return (MAE, RMSE, Spearman)
-      - Collapsible heatmap of uplifts at the bottom
-    """
-    st.subheader("Keyword Explorer")
-
+    st.subheader("Keyword effect (Market only vs Market + Keywords)")
     m = models[(models.get("asset") == asset) & (models.get("freq") == freq)]
+
+    # prepare base vs ext splits
     cls_b = m[(m.get("dataset") == "base") & (m.get("task") == "CLS")]
     cls_e = m[(m.get("dataset") == "ext")  & (m.get("task") == "CLS")]
     reg_b = m[(m.get("dataset") == "base") & (m.get("task") == "REG")]
@@ -324,93 +318,37 @@ def keyword_explorer_tab(models: pd.DataFrame, asset: str, freq: str):
     def best_max(df, col): return float(df[col].max()) if (not df.empty and col in df) else float("nan")
     def best_min(df, col): return float(df[col].min()) if (not df.empty and col in df) else float("nan")
 
-    # Best scores by dataset
-    best_auc_b, best_auc_e = best_max(cls_b, "auc"), best_max(cls_e, "auc")
-    best_acc_b, best_acc_e = best_max(cls_b, "accuracy"), best_max(cls_e, "accuracy")
-    best_f1_b,  best_f1_e  = best_max(cls_b, "f1"), best_max(cls_e, "f1")
-    best_mae_b, best_mae_e = best_min(reg_b, "mae"), best_min(reg_e, "mae")
-    best_rmse_b, best_rmse_e = best_min(reg_b, "rmse"), best_min(reg_e, "rmse")
-    best_spear_b, best_spear_e = best_max(reg_b, "spearman"), best_max(reg_e, "spearman")
+    rows = []
+    for name, col in [("AUC (trend prediction)", "auc"),
+                      ("Accuracy (trend prediction)", "accuracy"),
+                      ("F1 (trend prediction)", "f1")]:
+        b, e = best_max(cls_b, col), best_max(cls_e, col)
+        if not (np.isnan(b) and np.isnan(e)):
+            rows.append({"Metric": name, "Market only": b, "Market + Keywords": e, "Uplift": e - b})
 
-    # Uplifts (Direction: ext - base; Return: base - ext)
-    d_auc = (best_auc_e - best_auc_b) if not (np.isnan(best_auc_b) or np.isnan(best_auc_e)) else np.nan
-    d_acc = (best_acc_e - best_acc_b) if not (np.isnan(best_acc_b) or np.isnan(best_acc_e)) else np.nan
-    d_f1  = (best_f1_e  - best_f1_b ) if not (np.isnan(best_f1_b ) or np.isnan(best_f1_e )) else np.nan
-    d_mae = (best_mae_b - best_mae_e) if not (np.isnan(best_mae_b) or np.isnan(best_mae_e)) else np.nan
-    d_rmse= (best_rmse_b - best_rmse_e) if not (np.isnan(best_rmse_b) or np.isnan(best_rmse_e)) else np.nan
-    d_spear=(best_spear_e - best_spear_b) if not (np.isnan(best_spear_b) or np.isnan(best_spear_e)) else np.nan
+    b, e = best_min(reg_b, "mae"), best_min(reg_e, "mae")
+    if not (np.isnan(b) and np.isnan(e)):
+        rows.append({"Metric": "MAE (return error, lower is better)", "Market only": b, "Market + Keywords": e, "Uplift": b - e})
 
-    # KPI cards
-    c1, c2 = st.columns(2)
-    with c1:
-        st.metric("Δ AUC (ext − base)", value=("+" if not np.isnan(d_auc) and d_auc>=0 else "") + (f"{d_auc:.3f}" if not np.isnan(d_auc) else "—"))
-    with c2:
-        st.metric("Δ MAE (base − ext)", value=("+" if not np.isnan(d_mae) and d_mae>=0 else "") + (f"{d_mae:.3f}" if not np.isnan(d_mae) else "—"))
+    if "rmse" in m.columns:
+        b, e = best_min(reg_b, "rmse"), best_min(reg_e, "rmse")
+        if not (np.isnan(b) and np.isnan(e)):
+            rows.append({"Metric": "RMSE (return error, lower is better)", "Market only": b, "Market + Keywords": e, "Uplift": b - e})
 
-    # Direction metrics table
-    dir_rows = []
-    if not (np.isnan(best_auc_b) and np.isnan(best_auc_e)):
-        dir_rows.append({"Metric": "AUC", "Market only": best_auc_b, "Market + Keywords": best_auc_e, "Δ": d_auc})
-    if not (np.isnan(best_acc_b) and np.isnan(best_acc_e)):
-        dir_rows.append({"Metric": "Accuracy", "Market only": best_acc_b, "Market + Keywords": best_acc_e, "Δ": d_acc})
-    if not (np.isnan(best_f1_b) and np.isnan(best_f1_e)):
-        dir_rows.append({"Metric": "F1", "Market only": best_f1_b, "Market + Keywords": best_f1_e, "Δ": d_f1})
+    if "spearman" in m.columns:
+        b, e = best_max(reg_b, "spearman"), best_max(reg_e, "spearman")
+        if not (np.isnan(b) and np.isnan(e)):
+            rows.append({"Metric": "Spearman (return correlation)", "Market only": b, "Market + Keywords": e, "Uplift": e - b})
 
-    # Return metrics table
-    ret_rows = []
-    if not (np.isnan(best_mae_b) and np.isnan(best_mae_e)):
-        ret_rows.append({"Metric": "MAE", "Market only": best_mae_b, "Market + Keywords": best_mae_e, "Δ": d_mae})
-    if not (np.isnan(best_rmse_b) and np.isnan(best_rmse_e)):
-        ret_rows.append({"Metric": "RMSE", "Market only": best_rmse_b, "Market + Keywords": best_rmse_e, "Δ": d_rmse})
-    if not (np.isnan(best_spear_b) and np.isnan(best_spear_e)):
-        ret_rows.append({"Metric": "Spearman", "Market only": best_spear_b, "Market + Keywords": best_spear_e, "Δ": d_spear})
-
-    if not dir_rows and not ret_rows:
+    if not rows:
         st.info("No comparison available for this selection.")
         return
 
-    st.markdown("### Direction metrics")
-    if dir_rows:
-        df_dir = pd.DataFrame(dir_rows)
-        styled_dir = (df_dir.style
-                      .format({"Market only": "{:.3f}", "Market + Keywords": "{:.3f}", "Δ": "{:+.3f}"})
-                      .applymap(_uplift_color, subset=["Δ"]))
-        st.dataframe(styled_dir, use_container_width=True, hide_index=True)
-    else:
-        st.caption("No direction metrics available.")
-
-    st.markdown("### Return metrics")
-    if ret_rows:
-        df_ret = pd.DataFrame(ret_rows)
-        styled_ret = (df_ret.style
-                      .format({"Market only": "{:.3f}", "Market + Keywords": "{:.3f}", "Δ": "{:+.3f}"})
-                      .applymap(_uplift_color, subset=["Δ"]))
-        st.dataframe(styled_ret, use_container_width=True, hide_index=True)
-    else:
-        st.caption("No return metrics available.")
-
-    # Heatmap (collapsible)
-    with st.expander("Show heatmap of uplifts", expanded=False):
-        metrics = [r["Metric"] for r in dir_rows + ret_rows]
-        uplifts = [float(r["Δ"]) if not np.isnan(r["Δ"]) else 0.0 for r in dir_rows + ret_rows]
-
-        if metrics:
-            import plotly.graph_objects as go
-            import numpy as np
-            z = np.array(uplifts, dtype=float).reshape(len(metrics), 1)  # rows = metrics, one column
-            fig = go.Figure(data=go.Heatmap(
-                z=z,
-                x=["Δ"],  # single column
-                y=metrics,
-                colorbar=dict(title="Uplift"),
-                colorscale="RdBu",
-                zmid=0.0
-            ))
-            fig.update_layout(height=max(280, 24 * len(metrics) + 180), margin=dict(l=0, r=10, t=10, b=0))
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.caption("No data for heatmap.")
-
+    df = pd.DataFrame(rows)
+    styled = (df.style
+              .format({"Market only": "{:.3f}", "Market + Keywords": "{:.3f}", "Uplift": "{:+.3f}"})
+              .applymap(_uplift_color, subset=["Uplift"]))
+    st.dataframe(styled, use_container_width=True)
 
 def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, dataset_code: str):
     sd = strategies[(strategies.get("asset") == asset) &
@@ -530,6 +468,7 @@ def simple_mode():
 def advanced_mode(models: pd.DataFrame, strategies: pd.DataFrame, signals: Dict[str, Any]):
     st.title("Show me why")
 
+    # Session defaults
     assets = sorted(models.get("asset").dropna().astype(str).unique().tolist())
     asset_def = st.session_state.get("asset", assets[0] if assets else "")
     freq_def = st.session_state.get("freq", "W")
@@ -538,6 +477,8 @@ def advanced_mode(models: pd.DataFrame, strategies: pd.DataFrame, signals: Dict[
     label_to_code = {"Market only": "base", "Market + Keywords": "ext"}
     code_to_label = {v: k for k, v in label_to_code.items()}
     init_label = code_to_label.get(dataset_def, "Market + Keywords")
+
+    # Header controls — Asset + Frequency only
     colA, colB = st.columns([1.2, 0.9])
     with colA:
         asset = st.selectbox("Asset", assets, index=(assets.index(asset_def) if asset_def in assets else 0))
@@ -545,27 +486,27 @@ def advanced_mode(models: pd.DataFrame, strategies: pd.DataFrame, signals: Dict[
         freq = st.radio("Frequency", ["D", "W"], horizontal=True,
                         index=(["D", "W"].index(freq_def) if freq_def in ["D", "W"] else 1))
 
+    # Tabs
     tabs = st.tabs(["Model Comparison", "Keyword Explorer", "Strategy Insights", "Context"])
+
     with tabs[0]:
-        model_comparison_tab(models, asset, freq, dataset_code)
+        ds_label0 = st.radio("Dataset", ["Market only", "Market + Keywords"], horizontal=True,
+                              index=(["Market only", "Market + Keywords"].index(init_label)))
+        dataset_code0 = label_to_code[ds_label0]
+        model_comparison_tab(models, asset, freq, dataset_code0)
+
     with tabs[1]:
+        # No dataset toggle here by design
         keyword_explorer_tab(models, asset, freq)
+
     with tabs[2]:
-        strategy_insights_tab(strategies, asset, freq, dataset_code)
+        ds_label2 = st.radio("Dataset", ["Market only", "Market + Keywords"], horizontal=True,
+                              index=(["Market only", "Market + Keywords"].index(init_label)))
+        dataset_code2 = label_to_code[ds_label2]
+        strategy_insights_tab(strategies, asset, freq, dataset_code2)
+
     with tabs[3]:
-        context_tab(signals, asset, freq, dataset_code)
-
-# ------------------------------------------------------------
-# App entry
-# ------------------------------------------------------------
-st.set_page_config(page_title="Markets Demo", layout="wide")
-
-mode = st.sidebar.radio("Mode", ["Simple", "Advanced"],
-                        index=(0 if st.session_state.get("mode", "Simple") == "Simple" else 1))
-
-if mode == "Simple":
-    st.session_state["mode"] = "Simple"
-    simple_mode()
-else:
-    st.session_state["mode"] = "Advanced"
-    advanced_mode(model_metrics, strategy_metrics, signals_map)
+        ds_label3 = st.radio("Dataset", ["Market only", "Market + Keywords"], horizontal=True,
+                              index=(["Market only", "Market + Keywords"].index(init_label)))
+        dataset_code3 = label_to_code[ds_label3]
+        context_tab(signals, asset, freq, dataset_code3)
