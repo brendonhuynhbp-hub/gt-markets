@@ -254,51 +254,47 @@ def simple_card(asset: str, sig: Dict[str, Any], show_gauge: bool):
 # Tabs (Advanced)
 # ------------------------------------------------------------
 def model_comparison_tab(models: pd.DataFrame, asset: str, freq: str, dataset_code: str):
+    """Model Comparison (minimal): AUC for CLS, MAE for REG."""
     md = models[(models.get("asset") == asset) &
                 (models.get("freq") == freq) &
                 (models.get("dataset") == dataset_code)].copy()
 
     c1, c2 = st.columns(2)
+
+    # ---- Direction (Classification) ----
     with c1:
-        cls = md[md.get("task") == "CLS"]
         st.markdown("### Direction Prediction (AUC ↑ better)")
-        if cls.empty:
+        cls = md[md.get("task") == "CLS"].copy()
+        if cls.empty or "auc" not in cls.columns:
             st.caption("No direction models for this selection.")
         else:
-            # best by AUC
-            best = cls.loc[cls["auc"].idxmax()]
-            st.markdown(f"**Best AUC:** `{best['auc']:.3f}` — {model_to_label(best['model'])}")
-            # friendly table; group by model label to remove duplicates
-            t = cls.assign(Model=cls["model"].apply(model_to_label))
-            t = t.groupby("Model", as_index=False).agg({"auc":"max", "accuracy":"max", "f1":"max"})
-            t = t.rename(columns={"auc":"AUC","accuracy":"Accuracy","f1":"F1"}) \
-                 .sort_values("AUC", ascending=False).reset_index(drop=True)
-            st.dataframe(dash_na(t.round(3)), use_container_width=True)
+            # friendly label + keep max AUC per model label to avoid duplicates
+            cls["Model"] = cls["model"].apply(model_to_label)
+            tbl = (cls.groupby("Model", as_index=False)["auc"].max()
+                      .rename(columns={"auc": "AUC"})
+                      .sort_values("AUC", ascending=False)
+                      .reset_index(drop=True))
+            # best highlight
+            best_row = tbl.iloc[0]
+            st.markdown(f"**Best AUC:** `{best_row['AUC']:.3f}` — {best_row['Model']}")
+            st.dataframe(dash_na(tbl.round(3)), use_container_width=True)
 
+    # ---- Return (Regression) ----
     with c2:
-        reg = md[md.get("task") == "REG"]
         st.markdown("### Return Prediction (MAE ↓ better)")
-        if reg.empty:
+        reg = md[md.get("task") == "REG"].copy()
+        if reg.empty or "mae" not in reg.columns:
             st.caption("No return models for this selection.")
         else:
-            # best by MAE
-            best = reg.loc[reg["mae"].idxmin()]
-            st.markdown(f"**Best MAE:** `{best['mae']:.3f}` — {model_to_label(best['model'])}")
-            t = reg.assign(Model=reg["model"].apply(model_to_label))
-            # group by label, minimize MAE, RMSE and maximize Spearman
-            agg = {
-                "mae": "min",
-                "rmse": "min" if "rmse" in reg.columns else "min",
-                "spearman": "max" if "spearman" in reg.columns else "max"
-            }
-            keep = ["mae"] + [c for c in ["rmse","spearman"] if c in reg.columns]
-            t = t.groupby("Model", as_index=False).agg({k: agg[k] for k in keep})
-            # rename columns with friendly labels
-            ren = {"mae": "MAE (lower is better)"}
-            if "rmse" in t.columns: ren["rmse"] = "RMSE"
-            if "spearman" in t.columns: ren["spearman"] = "Spearman"
-            t = t.rename(columns=ren).sort_values("MAE (lower is better)", ascending=True).reset_index(drop=True)
-            st.dataframe(dash_na(t.round(3)), use_container_width=True)
+            reg["Model"] = reg["model"].apply(model_to_label)
+            tbl = (reg.groupby("Model", as_index=False)["mae"].min()
+                      .rename(columns={"mae": "MAE (lower is better)"})
+                      .sort_values("MAE (lower is better)", ascending=True)
+                      .reset_index(drop=True))
+            best_row = tbl.iloc[0]
+            st.markdown(f"**Best MAE:** `{best_row['MAE (lower is better)']:.3f}` — {best_row['Model']}")
+            st.dataframe(dash_na(tbl.round(3)), use_container_width=True)
+
 
 def _uplift_color(v, thr=0.002):
     try:
