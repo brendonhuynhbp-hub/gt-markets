@@ -306,7 +306,15 @@ def _uplift_color(v, thr=0.002):
         return "color: inherit"
 
 def keyword_explorer_tab(models: pd.DataFrame, asset: str, freq: str):
-    st.subheader("Keyword effect (Market only vs Market + Keywords)")
+    """
+    Redesigned Keyword Explorer:
+      - No dataset toggle (only Asset + Frequency are respected from header)
+      - Top KPI cards for Δ AUC (CLS, higher is better) and Δ MAE (REG, lower is better)
+      - Split tables: Direction metrics (AUC, Accuracy, F1) and Return metrics (MAE, RMSE, Spearman)
+      - Collapsible heatmap at the bottom showing uplifts
+    """
+    st.subheader("Keyword Explorer")
+
     m = models[(models.get("asset") == asset) & (models.get("freq") == freq)]
 
     # prepare base vs ext splits
@@ -318,37 +326,97 @@ def keyword_explorer_tab(models: pd.DataFrame, asset: str, freq: str):
     def best_max(df, col): return float(df[col].max()) if (not df.empty and col in df) else float("nan")
     def best_min(df, col): return float(df[col].min()) if (not df.empty and col in df) else float("nan")
 
-    rows = []
-    for name, col in [("AUC (trend prediction)", "auc"),
-                      ("Accuracy (trend prediction)", "accuracy"),
-                      ("F1 (trend prediction)", "f1")]:
-        b, e = best_max(cls_b, col), best_max(cls_e, col)
-        if not (np.isnan(b) and np.isnan(e)):
-            rows.append({"Metric": name, "Market only": b, "Market + Keywords": e, "Uplift": e - b})
+    # compute best scores
+    best_auc_b, best_auc_e = best_max(cls_b, "auc"), best_max(cls_e, "auc")
+    best_acc_b, best_acc_e = best_max(cls_b, "accuracy"), best_max(cls_e, "accuracy")
+    best_f1_b,  best_f1_e  = best_max(cls_b, "f1"), best_max(cls_e, "f1")
 
-    b, e = best_min(reg_b, "mae"), best_min(reg_e, "mae")
-    if not (np.isnan(b) and np.isnan(e)):
-        rows.append({"Metric": "MAE (return error, lower is better)", "Market only": b, "Market + Keywords": e, "Uplift": b - e})
+    best_mae_b, best_mae_e = best_min(reg_b, "mae"), best_min(reg_e, "mae")
+    best_rmse_b, best_rmse_e = best_min(reg_b, "rmse"), best_min(reg_e, "rmse")
+    best_spear_b, best_spear_e = best_max(reg_b, "spearman"), best_max(reg_e, "spearman")
 
-    if "rmse" in m.columns:
-        b, e = best_min(reg_b, "rmse"), best_min(reg_e, "rmse")
-        if not (np.isnan(b) and np.isnan(e)):
-            rows.append({"Metric": "RMSE (return error, lower is better)", "Market only": b, "Market + Keywords": e, "Uplift": b - e})
+    # uplifts (Direction: ext - base; Return: base - ext so that positive = improvement)
+    d_auc = (best_auc_e - best_auc_b) if not (np.isnan(best_auc_b) or np.isnan(best_auc_e)) else np.nan
+    d_acc = (best_acc_e - best_acc_b) if not (np.isnan(best_acc_b) or np.isnan(best_acc_e)) else np.nan
+    d_f1  = (best_f1_e  - best_f1_b ) if not (np.isnan(best_f1_b ) or np.isnan(best_f1_e )) else np.nan
 
-    if "spearman" in m.columns:
-        b, e = best_max(reg_b, "spearman"), best_max(reg_e, "spearman")
-        if not (np.isnan(b) and np.isnan(e)):
-            rows.append({"Metric": "Spearman (return correlation)", "Market only": b, "Market + Keywords": e, "Uplift": e - b})
+    d_mae = (best_mae_b - best_mae_e) if not (np.isnan(best_mae_b) or np.isnan(best_mae_e)) else np.nan
+    d_rmse= (best_rmse_b - best_rmse_e) if not (np.isnan(best_rmse_b) or np.isnan(best_rmse_e)) else np.nan
+    d_spear=(best_spear_e - best_spear_b) if not (np.isnan(best_spear_b) or np.isnan(best_spear_e)) else np.nan
 
-    if not rows:
+    # Top KPI cards
+    c1, c2 = st.columns(2)
+    with c1:
+        st.metric("Δ AUC (ext − base)", value=("+" if not np.isnan(d_auc) and d_auc>=0 else "") + (f"{d_auc:.3f}" if not np.isnan(d_auc) else "—"))
+    with c2:
+        st.metric("Δ MAE (base − ext)", value=("+" if not np.isnan(d_mae) and d_mae>=0 else "") + (f"{d_mae:.3f}" if not np.isnan(d_mae) else "—"))
+
+    # Direction metrics table
+    dir_rows = []
+    if not (np.isnan(best_auc_b) and np.isnan(best_auc_e)):
+        dir_rows.append({"Metric": "AUC", "Market only": best_auc_b, "Market + Keywords": best_auc_e, "Δ": d_auc})
+    if not (np.isnan(best_acc_b) and np.isnan(best_acc_e)):
+        dir_rows.append({"Metric": "Accuracy", "Market only": best_acc_b, "Market + Keywords": best_acc_e, "Δ": d_acc})
+    if not (np.isnan(best_f1_b) and np.isnan(best_f1_e)):
+        dir_rows.append({"Metric": "F1", "Market only": best_f1_b, "Market + Keywords": best_f1_e, "Δ": d_f1})
+
+    # Return metrics table
+    ret_rows = []
+    if not (np.isnan(best_mae_b) and np.isnan(best_mae_e)):
+        ret_rows.append({"Metric": "MAE", "Market only": best_mae_b, "Market + Keywords": best_mae_e, "Δ": d_mae})
+    if not (np.isnan(best_rmse_b) and np.isnan(best_rmse_e)):
+        ret_rows.append({"Metric": "RMSE", "Market only": best_rmse_b, "Market + Keywords": best_rmse_e, "Δ": d_rmse})
+    if not (np.isnan(best_spear_b) and np.isnan(best_spear_e)):
+        ret_rows.append({"Metric": "Spearman", "Market only": best_spear_b, "Market + Keywords": best_spear_e, "Δ": d_spear})
+
+    if not dir_rows and not ret_rows:
         st.info("No comparison available for this selection.")
         return
 
-    df = pd.DataFrame(rows)
-    styled = (df.style
-              .format({"Market only": "{:.3f}", "Market + Keywords": "{:.3f}", "Uplift": "{:+.3f}"})
-              .applymap(_uplift_color, subset=["Uplift"]))
-    st.dataframe(styled, use_container_width=True)
+    st.markdown("### Direction metrics")
+    if dir_rows:
+        df_dir = pd.DataFrame(dir_rows)
+        styled_dir = (df_dir.style
+                      .format({"Market only": "{:.3f}", "Market + Keywords": "{:.3f}", "Δ": "{:+.3f}"})
+                      .applymap(_uplift_color, subset=["Δ"]))
+        st.dataframe(styled_dir, use_container_width=True)
+    else:
+        st.caption("No direction metrics available.")
+
+    st.markdown("### Return metrics")
+    if ret_rows:
+        df_ret = pd.DataFrame(ret_rows)
+        styled_ret = (df_ret.style
+                      .format({"Market only": "{:.3f}", "Market + Keywords": "{:.3f}", "Δ": "{:+.3f}"})
+                      .applymap(_uplift_color, subset=["Δ"]))
+        st.dataframe(styled_ret, use_container_width=True)
+    else:
+        st.caption("No return metrics available.")
+
+    # Heatmap (collapsible)
+    st.markdown("")
+    with st.expander("Show heatmap of uplifts", expanded=False):
+        metrics = []
+        uplifts = []
+        for row in dir_rows + ret_rows:
+            metrics.append(row["Metric"])
+            uplifts.append(row["Δ"] if not np.isnan(row["Δ"]) else 0.0)
+
+        if uplifts:
+            import plotly.graph_objects as go
+            fig = go.Figure(data=go.Heatmap(
+                z=[uplifts],
+                x=["Δ"],
+                y=metrics,
+                colorbar=dict(title="Uplift"),
+                colorscale="RdBu",
+                zmid=0.0
+            ))
+            fig.update_layout(height=300 + 20*len(metrics), margin=dict(l=0, r=10, t=10, b=0))
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.caption("No data for heatmap.")
+
 
 def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, dataset_code: str):
     sd = strategies[(strategies.get("asset") == asset) &
