@@ -1,3 +1,4 @@
+import re
 # AppDemo/app/app.py
 from __future__ import annotations
 
@@ -350,44 +351,77 @@ def keyword_explorer_tab(models: pd.DataFrame, asset: str, freq: str):
               .applymap(_uplift_color, subset=["Uplift"]))
     st.dataframe(styled, use_container_width=True)
 
-def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, dataset_code: str):
-    sd = strategies[(strategies.get("asset") == asset) &
-                    (strategies.get("freq") == freq) &
-                    (strategies.get("dataset") == dataset_code)]
-    if sd.empty:
-        st.warning("No strategy metrics for this selection.")
-        return
+def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, dataset: str):
+    st.subheader("Strategy Insights")
 
-    # parse params into readable fields
-    parsed = sd["params"].fillna("").apply(parse_strategy_params).tolist() if "params" in sd.columns else []
-    if parsed:
-        parsed_df = pd.DataFrame(parsed, index=sd.index)
-        sd = pd.concat([sd, parsed_df], axis=1)
-    else:
-        sd["model_label"] = ""
-        sd["rule_label"] = ""
+    df = strategies.copy()
+    df = df[(df["asset"] == asset) & (df["freq"] == freq) & (df["dataset"] == dataset)]
 
-    # family ordering to keep hybrids together
-    fam_order = ["HYBRID_CONF", "ML", "TA", "HYBRID"]
-    sd["fam_sort"] = sd["family"].apply(lambda x: fam_order.index(x) if x in fam_order else 99)
+    # Parse pretty labels if not present
+    if "model_label" not in df or "rule_label" not in df:
+        df["model_label"] = df["params"].apply(lambda s: parse_label(s, "model") if isinstance(s, str) else "")
+        df["rule_label"]  = df["params"].apply(lambda s: parse_label(s, "rule")  if isinstance(s, str) else "")
+    df.rename(columns={"family":"Family","model_label":"Model","rule_label":"Rule",
+                       "sharpe":"Sharpe","max_dd":"Max DD","ann_return":"Annual Return"}, inplace=True)
 
-    cols_wanted = ["family", "model_label", "rule_label", "sharpe", "max_dd", "ann_return"]
-    cols_avail  = [c for c in cols_wanted if c in sd.columns]
+    # Controls
+    families = sorted(df["Family"].dropna().unique().tolist())
+    models   = sorted(df["Model"].dropna().unique().tolist())
 
-    df = (
-        sd.sort_values(["fam_sort", "sharpe"], ascending=[True, False])[cols_avail]
-          .rename(columns={
-              "family": "Family",
-              "model_label": "Model",
-              "rule_label": "Rule",
-              "sharpe": "Sharpe",
-              "max_dd": "Max DD",
-              "ann_return": "Annual Return"
-          })
-          .round({"Sharpe": 3, "Max DD": 3, "Annual Return": 3})
-          .reset_index(drop=True)
+    c1,c2,c3,c4 = st.columns([1.2,1.2,1.2,1])
+    with c1:
+        sel_fam = st.multiselect("Family", families, default=families)
+    with c2:
+        sel_mod = st.multiselect("Model", models, default=models)
+    with c3:
+        sort_by = st.selectbox("Sort by", ["Sharpe","Annual Return","Max DD"], index=0)
+    with c4:
+        topn = st.number_input("Top-N / family", 1, 20, 5, 1)
+
+    q = st.text_input("Search in Rule (regex ok)", "")
+
+    # Filter
+    f = df[df["Family"].isin(sel_fam) & df["Model"].isin(sel_mod)]
+    if q.strip():
+        try:
+            f = f[f["Rule"].str.contains(q, case=False, regex=True, na=False)]
+        except re.error:
+            st.warning("Invalid regex in search; showing all.")
+
+    f = (f
+         .drop_duplicates(subset=["Family","Model","Rule","Sharpe","Max DD","Annual Return"])
+         .reset_index(drop=True))
+
+    # Top-N per family by chosen metric
+    asc = (sort_by == "Max DD")  # more negative is worse, so ascending
+    f = (f.sort_values(by=[sort_by], ascending=asc)
+           .groupby("Family", group_keys=False)
+           .head(int(topn)))
+
+    # Summary
+    st.caption(f"Showing **{len(f):,}** strategies across **{f['Family'].nunique()}** family(ies).")
+
+    # Format & style
+    show = f[["Family","Model","Rule","Sharpe","Max DD","Annual Return"]].copy()
+    show["Sharpe"] = show["Sharpe"].astype(float)
+    show["Annual Return"] = show["Annual Return"].astype(float)
+    show["Max DD"] = show["Max DD"].astype(float)
+
+    def fmt_dec(x): 
+        return f"{x:.2f}" if pd.notna(x) else "-"
+
+    styled = (show.style
+        .format({"Sharpe": fmt_dec, "Max DD": fmt_dec, "Annual Return": fmt_dec})
+        .apply(lambda s: ["color:#e74c3c" if v < 0 else "" for v in s] if s.name=="Max DD" else [""]*len(s))
+        .bar(subset=["Sharpe"], align="zero")
+        .background_gradient(subset=["Annual Return"], cmap="Greens")
     )
-    st.dataframe(dash_na(df), use_container_width=True)
+    st.dataframe(styled, use_container_width=True, hide_index=True)
+
+    # Download button
+    csv = show.to_csv(index=False).encode("utf-8")
+    st.download_button("Download filtered CSV", csv, file_name=f"strategies_{asset}_{freq}_{dataset}.csv", mime="text/csv")
+
 
 def context_tab(signals: Dict[str, Any], asset: str, freq: str, dataset_code: str):
     # try to find a matching signal
@@ -512,3 +546,13 @@ if mode == "Simple":
 else:
     st.session_state["mode"] = "Advanced"
     advanced_mode(model_metrics, strategy_metrics, signals_map)
+
+
+def parse_label(params: str, part: str) -> str:
+    if not isinstance(params, str):
+        return ""
+    if part == "model":
+        m = re.search(r"(model|mdl)\s*=\s*([^;|]+)", params, re.I)
+    else:
+        m = re.search(r"(rule|ta)\s*=\s*(.+)", params, re.I)
+    return m.group(2).strip() if m else params
