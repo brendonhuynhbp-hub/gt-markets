@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import numpy as np
 from pathlib import Path
 from typing import Dict, Any, List
 
@@ -132,89 +133,10 @@ def clamp(v: Any, lo: int = 0, hi: int = 100) -> int:
     except Exception:
         return lo
 
-def dash_na(df: pd.DataFrame) -> pd.DataFrame:
-    return df.replace([np.nan, None], "–")
+def dash_na(df: pd.DataFrame):
+    # Replace NaN/None with dash for display
+    return df.replace([np.nan, None], "-")
 
-# ------------------------------------------------------------
-# Gauges
-# ------------------------------------------------------------
-def _bands(decision: str) -> List[Dict[str, Any]]:
-    d = (decision or "").upper()
-    if d == "SELL":
-        return [{"range": [0, 40], "color": "green"},
-                {"range": [40, 60], "color": "yellow"},
-                {"range": [60, 100], "color": "red"}]
-    return [{"range": [0, 40], "color": "red"},
-            {"range": [40, 60], "color": "yellow"},
-            {"range": [60, 100], "color": "green"}]
-
-def gauge(val: int, decision: str, title: str, show_number: bool, height: int = 150) -> go.Figure:
-    v = clamp(val)
-    fig = go.Figure(go.Indicator(
-        mode="gauge+number" if show_number else "gauge",
-        value=v,
-        number={'font': {'size': 28}} if show_number else None,
-        title={"text": title, "font": {"size": 12}},
-        gauge={"axis": {"range": [0, 100]},
-               "bar": {"color": "black", "thickness": 0.25},
-               "steps": _bands(decision),
-               "threshold": {"line": {"color": "black", "width": 3}, "thickness": 0.7, "value": v}}
-    ))
-    fig.update_layout(height=height, margin=dict(l=2, r=2, t=8, b=2))
-    return fig
-
-# ------------------------------------------------------------
-# Reasons for Simple Mode
-# ------------------------------------------------------------
-def reason_text(sig: Dict[str, Any]) -> str:
-    decision = (sig.get("decision") or "").upper()
-    fam = (sig.get("family") or "").upper()
-    freq = "Weekly" if str(sig.get("freq", "")).upper() == "W" else "Daily"
-    ds = (sig.get("dataset") or "").upper()
-    # Classification: prob/thr
-    if fam == "CLS" and pd.notna(sig.get("prob")):
-        p = float(sig["prob"])
-        thr = float(sig.get("thr", 0.6))
-        pdn = 1.0 - p
-        if p >= thr:
-            core = f"Model predicts ↑ with {p:.0%} confidence — upside edge"
-        elif pdn >= thr:
-            core = f"Model predicts ↓ with {pdn:.0%} confidence — downside edge"
-        else:
-            core = f"Model confidence {p:.0%} — no clear edge"
-    # Regression: pred_ret
-    elif fam == "REG" and pd.notna(sig.get("pred_ret")):
-        pr = float(sig["pred_ret"])
-        bias = "upside" if pr >= 0 else "downside"
-        core = f"Model projects {pr:+.2%} expected return — {bias} bias"
-    else:
-        core = f"Model suggests {decision.title()}"
-    return f"{core}. ({freq} · {ds})"
-
-# ------------------------------------------------------------
-# Best TA (for a quick confirm line in Simple Mode)
-# ------------------------------------------------------------
-def best_ta(asset: str, freq: str, dataset: str) -> str | None:
-    sm = strategy_metrics
-    sub = sm[(sm.get("asset") == asset) &
-             (sm.get("freq") == freq) &
-             (sm.get("dataset") == dataset) &
-             (sm.get("family").str.upper() == "HYBRID_CONF")]
-    if sub.empty:
-        return None
-    row = sub.sort_values("sharpe", ascending=False).iloc[0]
-    info = parse_strategy_params(row.get("params", ""))
-    return info["ta_label"] or None
-
-# ------------------------------------------------------------
-# Simple Mode card
-# ------------------------------------------------------------
-def _pill(text: str, tone: str) -> str:
-    colors = {"good": ("#1e9e49", "#e7f6ec"),
-              "bad": ("#d9534f", "#fdeaea"),
-              "neutral": ("#666", "#efefef")}
-    fg, bg = colors.get(tone, colors["neutral"])
-    return f"<span style='background:{bg};color:{fg};padding:3px 10px;border-radius:999px;font-weight:600;margin-left:6px;'>{text}</span>"
 
 def simple_card(asset: str, sig: Dict[str, Any], show_gauge: bool):
     decision = (sig.get("decision") or "").upper()
