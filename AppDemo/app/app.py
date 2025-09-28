@@ -1,514 +1,199 @@
-# AppDemo/app/app.py
-from __future__ import annotations
-
 import json
-from pathlib import Path
-from typing import Dict, Any, List
-
-import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-# ------------------------------------------------------------
-# Config
-# ------------------------------------------------------------
-DATA_DIRS = [
-    Path(__file__).resolve().parent.parent / "data",  # AppDemo/data relative to this file
-    Path("AppDemo/data"),                              # when running from repo root
-    Path("./data"),                                    # fallback
-]
+# =====================
+# Load data
+# =====================
+@st.cache_data
+def load_data():
+    model_metrics = pd.read_csv("AppDemo/data/model_metrics.csv")
+    strategy_metrics = pd.read_csv("AppDemo/data/strategy_metrics.csv")
+    with open("AppDemo/data/signals_demo.json", "r") as f:
+        signals_demo = json.load(f)
+    return model_metrics, strategy_metrics, signals_demo
 
-# ------------------------------------------------------------
-# Helpers: safe file discovery & data loading
-# ------------------------------------------------------------
-def _find_data_file(fname: str) -> Path:
-    for d in DATA_DIRS:
-        p = d / fname
-        if p.exists():
-            return p
-    raise FileNotFoundError(f"Could not find {fname} in any of {DATA_DIRS}")
+model_metrics, strategy_metrics, signals_demo = load_data()
 
-@st.cache_data(show_spinner=False)
-def load_all() -> tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
-    # model & strategy metrics
-    mm = pd.read_csv(_find_data_file("model_metrics.csv"))
-    sm = pd.read_csv(_find_data_file("strategy_metrics.csv"))
-
-    # normalize headers
-    mm.columns = mm.columns.str.strip().str.lower()
-    sm.columns = sm.columns.str.strip().str.lower()
-
-    # prefer demo signals if available
-    try:
-        sig_path = _find_data_file("signals_demo.json")
-    except FileNotFoundError:
-        sig_path = _find_data_file("signals_snapshot.json")
-
-    with open(sig_path, "r") as f:
-        sig = json.load(f)
-
-    # light cleanup
-    if "acc" in mm.columns and "accuracy" not in mm.columns:
-        mm = mm.rename(columns={"acc": "accuracy"})
-    if "maxdd" in sm.columns and "max_dd" not in sm.columns:
-        sm = sm.rename(columns={"maxdd": "max_dd"})
-
-    # force canonical dtypes where sensible
-    for col in ["asset", "freq", "dataset", "model", "task"]:
-        if col in mm.columns:
-            mm[col] = mm[col].astype(str)
-    for col in ["asset", "freq", "dataset", "family"]:
-        if col in sm.columns:
-            sm[col] = sm[col].astype(str)
-
-    return mm, sm, sig
-
-model_metrics, strategy_metrics, signals_map = load_all()
-
-# ------------------------------------------------------------
-# Labeling & parsing helpers
-# ------------------------------------------------------------
-MODEL_LABELS = {
-    "XGB": "XGBoost", "XGB_cls": "XGBoost", "XGB_reg": "XGBoost",
-    "GRU": "GRU", "GRU_cls": "GRU", "GRU_reg": "GRU",
-    "LSTM": "LSTM", "LSTM_cls": "LSTM", "LSTM_reg": "LSTM",
-    "RF": "Random Forest", "RF_cls": "Random Forest", "RF_reg": "Random Forest",
-    "LR_cls": "Logistic Regression", "LR_reg": "Linear Regression",
-    "MLP": "MLP", "MLP_cls": "MLP", "MLP_reg": "MLP",
-}
-
-def model_to_label(m: str) -> str:
-    if not isinstance(m, str): return ""
-    base = m.split("_")[0]
-    return MODEL_LABELS.get(m, MODEL_LABELS.get(base, m))
-
-def ta_to_label(ta: str) -> str:
-    if not isinstance(ta, str) or not ta:
-        return ""
-    if ta.startswith("TA_RSI"):
-        try:
-            core = ta.replace("TA_RSI", "")
-            period, bands = core.split("_")
-            hi, lo = bands.split("-")
-            return f"RSI({int(period)}) {hi}/{lo}"
-        except Exception:
-            return "RSI confirmation"
-    if ta.startswith("TA_MAcross"):
-        try:
-            core = ta.replace("TA_MAcross_", "")
-            fast, slow = core.split("-")
-            return f"MA {fast}/{slow}"
-        except Exception:
-            return "MA crossover"
-    return ta
-
-def parse_strategy_params(params: Any) -> dict:
-    """Return dict(model_param, hi, lo, ta, model_label, ta_label, rule_label)."""
-    res = {"model_param": "", "hi": "", "lo": "", "ta": "", "model_label": "", "ta_label": "", "rule_label": ""}
-    if not isinstance(params, str) or not params:
-        return res
-    try:
-        # params in CSV are JSON-like
-        d = json.loads(params.replace("'", "\""))
-    except Exception:
-        return res
-    res["model_param"] = d.get("model", "")
-    res["hi"] = d.get("hi", "")
-    res["lo"] = d.get("lo", "")
-    res["ta"] = d.get("ta", "")
-    res["model_label"] = model_to_label(res["model_param"])
-    res["ta_label"] = ta_to_label(res["ta"])
-    bits = []
-    if res["ta_label"]:
-        bits.append(res["ta_label"])
-    if res["hi"] != "" and res["lo"] != "":
-        bits.append(f"hi/lo {res['hi']}/{res['lo']}")
-    res["rule_label"] = " · ".join(bits)
-    return res
-
-def clamp(v: Any, lo: int = 0, hi: int = 100) -> int:
-    try:
-        return max(lo, min(hi, int(v)))
-    except Exception:
-        return lo
-
-def dash_na(df: pd.DataFrame) -> pd.DataFrame:
-    return df.replace([np.nan, None], "–")
-
-# ------------------------------------------------------------
-# Gauges
-# ------------------------------------------------------------
-def _bands(decision: str) -> List[Dict[str, Any]]:
-    d = (decision or "").upper()
-    if d == "SELL":
-        return [{"range": [0, 40], "color": "green"},
-                {"range": [40, 60], "color": "yellow"},
-                {"range": [60, 100], "color": "red"}]
-    return [{"range": [0, 40], "color": "red"},
-            {"range": [40, 60], "color": "yellow"},
-            {"range": [60, 100], "color": "green"}]
-
-def gauge(val: int, decision: str, title: str, show_number: bool, height: int = 150) -> go.Figure:
-    v = clamp(val)
+# =====================
+# Helper: Gauge chart
+# =====================
+def render_gauge(value, label):
     fig = go.Figure(go.Indicator(
-        mode="gauge+number" if show_number else "gauge",
-        value=v,
-        number={'font': {'size': 28}} if show_number else None,
-        title={"text": title, "font": {"size": 12}},
-        gauge={"axis": {"range": [0, 100]},
-               "bar": {"color": "black", "thickness": 0.25},
-               "steps": _bands(decision),
-               "threshold": {"line": {"color": "black", "width": 3}, "thickness": 0.7, "value": v}}
+        mode="gauge+number",
+        value=value,
+        gauge={
+            "axis": {"range": [0, 100]},
+            "bar": {"color": "black"},
+            "steps": [
+                {"range": [0, 40], "color": "red"},
+                {"range": [40, 60], "color": "yellow"},
+                {"range": [60, 100], "color": "green"}
+            ]
+        },
+        number={"font": {"size": 32}},
+        title={"text": label}
     ))
-    fig.update_layout(height=height, margin=dict(l=2, r=2, t=8, b=2))
+    fig.update_layout(height=200, margin=dict(l=10, r=10, t=40, b=10))
     return fig
 
-# ------------------------------------------------------------
-# Reasons for Simple Mode
-# ------------------------------------------------------------
-def reason_text(sig: Dict[str, Any]) -> str:
-    decision = (sig.get("decision") or "").upper()
-    fam = (sig.get("family") or "").upper()
-    freq = "Weekly" if str(sig.get("freq", "")).upper() == "W" else "Daily"
-    ds = (sig.get("dataset") or "").upper()
-    # Classification: prob/thr
-    if fam == "CLS" and pd.notna(sig.get("prob")):
-        p = float(sig["prob"])
-        thr = float(sig.get("thr", 0.6))
-        pdn = 1.0 - p
-        if p >= thr:
-            core = f"Model predicts ↑ with {p:.0%} confidence — upside edge"
-        elif pdn >= thr:
-            core = f"Model predicts ↓ with {pdn:.0%} confidence — downside edge"
-        else:
-            core = f"Model confidence {p:.0%} — no clear edge"
-    # Regression: pred_ret
-    elif fam == "REG" and pd.notna(sig.get("pred_ret")):
-        pr = float(sig["pred_ret"])
-        bias = "upside" if pr >= 0 else "downside"
-        core = f"Model projects {pr:+.2%} expected return — {bias} bias"
-    else:
-        core = f"Model suggests {decision.title()}"
-    return f"{core}. ({freq} · {ds})"
+# =====================
+# Simple Mode
+# =====================
+def simple_mode(signals):
+    st.header("What should I trade now?")
 
-# ------------------------------------------------------------
-# Best TA (for a quick confirm line in Simple Mode)
-# ------------------------------------------------------------
-def best_ta(asset: str, freq: str, dataset: str) -> str | None:
-    sm = strategy_metrics
-    sub = sm[(sm.get("asset") == asset) &
-             (sm.get("freq") == freq) &
-             (sm.get("dataset") == dataset) &
-             (sm.get("family").str.upper() == "HYBRID_CONF")]
-    if sub.empty:
-        return None
-    row = sub.sort_values("sharpe", ascending=False).iloc[0]
-    info = parse_strategy_params(row.get("params", ""))
-    return info["ta_label"] or None
+    min_strength = st.slider("Min strength", 0, 100, 50)
+    show_gauges = st.toggle("Show gauges", value=True)
 
-# ------------------------------------------------------------
-# Simple Mode card
-# ------------------------------------------------------------
-def _pill(text: str, tone: str) -> str:
-    colors = {"good": ("#1e9e49", "#e7f6ec"),
-              "bad": ("#d9534f", "#fdeaea"),
-              "neutral": ("#666", "#efefef")}
-    fg, bg = colors.get(tone, colors["neutral"])
-    return f"<span style='background:{bg};color:{fg};padding:3px 10px;border-radius:999px;font-weight:600;margin-left:6px;'>{text}</span>"
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("BUY")
+        buys = [s for s in signals if s["decision"] == "BUY" and s["strength"] >= min_strength]
+        if not buys:
+            st.write("No BUY signals found right now.")
+        for sig in buys:
+            st.markdown(f"**{sig['asset']}** — {sig['decision']} (Strength {sig['strength']})")
+            st.caption(sig["reason"])
+            if show_gauges:
+                st.plotly_chart(render_gauge(sig["strength"], "Strength"), use_container_width=True)
 
-def simple_card(asset: str, sig: Dict[str, Any], show_gauge: bool):
-    decision = (sig.get("decision") or "").upper()
-    idx = clamp(sig.get("index", 0))
-    ta = best_ta(asset, str(sig.get("freq", "")), str(sig.get("dataset", "")))
-    reason = reason_text(sig)
-    dec_p = _pill("BUY" if decision == "BUY" else "SELL", "good" if decision == "BUY" else "bad")
-    str_p = _pill(f"Strength {idx}", "neutral")
-    ta_txt = f"; {ta} confirmation" if ta else ""
-    border = "2px solid #1e9e49" if decision == "BUY" else "2px solid #d9534f"
+    with col2:
+        st.subheader("SELL")
+        sells = [s for s in signals if s["decision"] == "SELL" and s["strength"] >= min_strength]
+        if not sells:
+            st.write("No SELL signals found right now.")
+        for sig in sells:
+            st.markdown(f"**{sig['asset']}** — {sig['decision']} (Strength {sig['strength']})")
+            st.caption(sig["reason"])
+            if show_gauges:
+                st.plotly_chart(render_gauge(sig["strength"], "Strength"), use_container_width=True)
 
-    st.markdown(f"""
-    <div style="border:{border};border-radius:12px;padding:12px 14px;margin-bottom:10px;background:#121212;">
-      <div style="display:flex;justify-content:space-between;align-items:center;">
-        <div style="font-size:1.05rem;font-weight:700;">{asset}</div>
-        <div>{dec_p}{str_p}</div>
-      </div>
-      <div style="color:#cfcfcf;margin-top:6px;">{reason}{ta_txt}.</div>
-    </div>
-    """, unsafe_allow_html=True)
+# =====================
+# Advanced Tabs
+# =====================
 
-    if show_gauge:
-        st.plotly_chart(gauge(idx, decision, f"{asset}", False), use_container_width=True)
+# --- Model Comparison ---
+def model_comparison_tab(model_metrics, asset, freq, dataset_code):
+    st.subheader("Model Performance")
+    df = model_metrics.query("asset == @asset and freq == @freq and dataset == @dataset_code")
 
-    if st.button(f"View details — {asset} ({sig.get('freq','')}/{str(sig.get('dataset','')).upper()})",
-                 key=f"view_{asset}_{sig.get('freq','')}_{sig.get('dataset','')}"):
-        st.session_state.update({
-            "mode": "Advanced",
-            "asset": asset,
-            "freq": str(sig.get("freq", "W")),
-            "dataset": str(sig.get("dataset", "ext")).lower(),
-            "tab_index": 0
-        })
-
-# ------------------------------------------------------------
-# Tabs (Advanced)
-# ------------------------------------------------------------
-def model_comparison_tab(models: pd.DataFrame, asset: str, freq: str, dataset_code: str):
-    """Model Comparison (minimal): AUC for CLS, MAE for REG."""
-    md = models[(models.get("asset") == asset) &
-                (models.get("freq") == freq) &
-                (models.get("dataset") == dataset_code)].copy()
-
-    c1, c2 = st.columns(2)
-
-    # ---- Direction (Classification) ----
-    with c1:
-        st.markdown("### Direction Prediction (AUC ↑ better)")
-        cls = md[md.get("task") == "CLS"].copy()
-        if cls.empty or "auc" not in cls.columns:
-            st.caption("No direction models for this selection.")
-        else:
-            # friendly label + keep max AUC per model label to avoid duplicates
-            cls["Model"] = cls["model"].apply(model_to_label)
-            tbl = (cls.groupby("Model", as_index=False)["auc"].max()
-                      .rename(columns={"auc": "AUC"})
-                      .sort_values("AUC", ascending=False)
-                      .reset_index(drop=True))
-            # best highlight
-            best_row = tbl.iloc[0]
-            st.markdown(f"**Best AUC:** `{best_row['AUC']:.3f}` — {best_row['Model']}")
-            st.dataframe(dash_na(tbl.round(3)), use_container_width=True)
-
-    # ---- Return (Regression) ----
-    with c2:
-        st.markdown("### Return Prediction (MAE ↓ better)")
-        reg = md[md.get("task") == "REG"].copy()
-        if reg.empty or "mae" not in reg.columns:
-            st.caption("No return models for this selection.")
-        else:
-            reg["Model"] = reg["model"].apply(model_to_label)
-            tbl = (reg.groupby("Model", as_index=False)["mae"].min()
-                      .rename(columns={"mae": "MAE (lower is better)"})
-                      .sort_values("MAE (lower is better)", ascending=True)
-                      .reset_index(drop=True))
-            best_row = tbl.iloc[0]
-            st.markdown(f"**Best MAE:** `{best_row['MAE (lower is better)']:.3f}` — {best_row['Model']}")
-            st.dataframe(dash_na(tbl.round(3)), use_container_width=True)
-
-
-def _uplift_color(v, thr=0.002):
-    try:
-        if pd.isna(v): return "color: inherit"
-        if v > thr:    return "color: #1e9e49; font-weight: 600"
-        if v < -thr:   return "color: #d9534f; font-weight: 600"
-        return "color: #999999"
-    except Exception:
-        return "color: inherit"
-
-def keyword_explorer_tab(models: pd.DataFrame, asset: str, freq: str):
-    st.subheader("Keyword effect (Market only vs Market + Keywords)")
-    m = models[(models.get("asset") == asset) & (models.get("freq") == freq)]
-
-    # prepare base vs ext splits
-    cls_b = m[(m.get("dataset") == "base") & (m.get("task") == "CLS")]
-    cls_e = m[(m.get("dataset") == "ext")  & (m.get("task") == "CLS")]
-    reg_b = m[(m.get("dataset") == "base") & (m.get("task") == "REG")]
-    reg_e = m[(m.get("dataset") == "ext")  & (m.get("task") == "REG")]
-
-    def best_max(df, col): return float(df[col].max()) if (not df.empty and col in df) else float("nan")
-    def best_min(df, col): return float(df[col].min()) if (not df.empty and col in df) else float("nan")
-
-    rows = []
-    for name, col in [("AUC (trend prediction)", "auc"),
-                      ("Accuracy (trend prediction)", "accuracy"),
-                      ("F1 (trend prediction)", "f1")]:
-        b, e = best_max(cls_b, col), best_max(cls_e, col)
-        if not (np.isnan(b) and np.isnan(e)):
-            rows.append({"Metric": name, "Market only": b, "Market + Keywords": e, "Uplift": e - b})
-
-    b, e = best_min(reg_b, "mae"), best_min(reg_e, "mae")
-    if not (np.isnan(b) and np.isnan(e)):
-        rows.append({"Metric": "MAE (return error, lower is better)", "Market only": b, "Market + Keywords": e, "Uplift": b - e})
-
-    if "rmse" in m.columns:
-        b, e = best_min(reg_b, "rmse"), best_min(reg_e, "rmse")
-        if not (np.isnan(b) and np.isnan(e)):
-            rows.append({"Metric": "RMSE (return error, lower is better)", "Market only": b, "Market + Keywords": e, "Uplift": b - e})
-
-    if "spearman" in m.columns:
-        b, e = best_max(reg_b, "spearman"), best_max(reg_e, "spearman")
-        if not (np.isnan(b) and np.isnan(e)):
-            rows.append({"Metric": "Spearman (return correlation)", "Market only": b, "Market + Keywords": e, "Uplift": e - b})
-
-    if not rows:
-        st.info("No comparison available for this selection.")
+    if df.empty:
+        st.warning("No data available for this selection.")
         return
 
-    df = pd.DataFrame(rows)
-    styled = (df.style
-              .format({"Market only": "{:.3f}", "Market + Keywords": "{:.3f}", "Uplift": "{:+.3f}"})
-              .applymap(_uplift_color, subset=["Uplift"]))
-    st.dataframe(styled, use_container_width=True)
+    cls = df[df["task"] == "CLS"][["model", "auc"]].sort_values("auc", ascending=False)
+    reg = df[df["task"] == "REG"][["model", "mae"]].sort_values("mae", ascending=True)
 
-def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, dataset_code: str):
-    sd = strategies[(strategies.get("asset") == asset) &
-                    (strategies.get("freq") == freq) &
-                    (strategies.get("dataset") == dataset_code)]
-    if sd.empty:
-        st.warning("No strategy metrics for this selection.")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("**Direction Models (AUC ↑ better)**")
+        st.dataframe(cls.reset_index(drop=True))
+    with col2:
+        st.markdown("**Return Models (MAE ↓ better)**")
+        st.dataframe(reg.reset_index(drop=True))
+
+# --- Keyword Explorer ---
+def keyword_explorer_tab(model_metrics, asset, freq):
+    st.subheader("Keyword effect (Market only vs Market+Keywords)")
+
+    df = model_metrics.query("asset == @asset and freq == @freq")
+    if df.empty:
+        st.warning("No keyword data for this selection.")
         return
 
-    # parse params into readable fields
-    parsed = sd["params"].fillna("").apply(parse_strategy_params).tolist() if "params" in sd.columns else []
-    if parsed:
-        parsed_df = pd.DataFrame(parsed, index=sd.index)
-        sd = pd.concat([sd, parsed_df], axis=1)
-    else:
-        sd["model_label"] = ""
-        sd["rule_label"] = ""
+    # Compute average metrics per dataset
+    metrics = ["AUC", "ACC", "F1", "MAE", "RMSE", "Spearman"]
+    base = df[df["dataset"] == "base"][metrics].mean()
+    ext = df[df["dataset"] == "ext"][metrics].mean()
+    uplift = ext - base
 
-    # family ordering to keep hybrids together
-    fam_order = ["HYBRID_CONF", "ML", "TA", "HYBRID"]
-    sd["fam_sort"] = sd["family"].apply(lambda x: fam_order.index(x) if x in fam_order else 99)
+    # KPI cards for ΔAUC and ΔMAE
+    col1, col2 = st.columns(2)
+    col1.metric("Δ AUC", f"{uplift['AUC']:+.3f}")
+    col2.metric("Δ MAE", f"{uplift['MAE']:+.3f}")
 
-    cols_wanted = ["family", "model_label", "rule_label", "sharpe", "max_dd", "ann_return"]
-    cols_avail  = [c for c in cols_wanted if c in sd.columns]
+    # Direction vs Return metrics
+    st.markdown("**Direction metrics**")
+    dir_table = pd.DataFrame({
+        "Metric": ["AUC", "Accuracy", "F1"],
+        "Market only": [base["AUC"], base["ACC"], base["F1"]],
+        "Market+Keywords": [ext["AUC"], ext["ACC"], ext["F1"]],
+        "Uplift": [uplift["AUC"], uplift["ACC"], uplift["F1"]]
+    })
+    st.dataframe(dir_table.style.format("{:.3f}").applymap(
+        lambda v: f"color: {'green' if v > 0 else 'red'}" if isinstance(v, (int, float)) else ""
+    , subset=["Uplift"]))
 
-    df = (
-        sd.sort_values(["fam_sort", "sharpe"], ascending=[True, False])[cols_avail]
-          .rename(columns={
-              "family": "Family",
-              "model_label": "Model",
-              "rule_label": "Rule",
-              "sharpe": "Sharpe",
-              "max_dd": "Max DD",
-              "ann_return": "Annual Return"
-          })
-          .round({"Sharpe": 3, "Max DD": 3, "Annual Return": 3})
-          .reset_index(drop=True)
-    )
-    st.dataframe(dash_na(df), use_container_width=True)
+    st.markdown("**Return metrics**")
+    ret_table = pd.DataFrame({
+        "Metric": ["MAE", "RMSE", "Spearman"],
+        "Market only": [base["MAE"], base["RMSE"], base["Spearman"]],
+        "Market+Keywords": [ext["MAE"], ext["RMSE"], ext["Spearman"]],
+        "Uplift": [uplift["MAE"], uplift["RMSE"], uplift["Spearman"]]
+    })
+    st.dataframe(ret_table.style.format("{:.3f}").applymap(
+        lambda v: f"color: {'green' if v < 0 else 'red'}" if isinstance(v, (int, float)) else ""
+    , subset=["Uplift"]))
 
-def context_tab(signals: Dict[str, Any], asset: str, freq: str, dataset_code: str):
-    # try to find a matching signal
-    target = None
-    for k, v in signals.items():
-        # support both compact keys and full records
-        a = v.get("asset") or (k.split("-")[0] if "-" in k else "")
-        f = v.get("freq")  or (k.split("-")[1] if "-" in k and len(k.split("-")) >= 2 else "")
-        d = (v.get("dataset") or (k.split("-")[2] if "-" in k and len(k.split("-")) >= 3 else "")).lower()
-        if a == asset and str(f).upper() == freq and d == dataset_code.lower():
-            target = v; break
+    # Heatmap in expander
+    with st.expander("Show uplift heatmap"):
+        import seaborn as sns
+        import matplotlib.pyplot as plt
 
-    st.subheader("Context")
-    if not target:
-        st.caption("No snapshot entry for this selection.")
+        fig, ax = plt.subplots()
+        sns.heatmap(pd.DataFrame(uplift).T, annot=True, cmap="RdYlGn", center=0, ax=ax)
+        st.pyplot(fig)
+
+# --- Strategy Insights ---
+def strategy_insights_tab(strategy_metrics, asset, freq, dataset_code):
+    st.subheader("Trading Strategy Performance")
+    df = strategy_metrics.query("asset == @asset and freq == @freq and dataset == @dataset_code")
+    if df.empty:
+        st.warning("No strategy data for this selection.")
         return
-    st.markdown("#### Sentiment gauge")
-    st.caption("Index reflects model confidence / predicted return strength (0–100).")
-    st.plotly_chart(
-        gauge(target.get("index", 0), target.get("decision", "SELL"), f"{asset} · {freq} · {dataset_code.upper()}", True),
-        use_container_width=True
-    )
 
-# ------------------------------------------------------------
-# Modes
-# ------------------------------------------------------------
-def simple_mode():
-    st.title("What should I trade now?")
-    c1, c2, c3 = st.columns([1.1, 1, 1.3])
+    cols = ["family", "sharpe", "max_dd", "ann_return"]
+    st.dataframe(df[cols].sort_values("sharpe", ascending=False).reset_index(drop=True))
 
-    with c1:
-        min_strength = st.slider("Min strength", 0, 100, 50)
-    with c2:
-        show_gauges = st.toggle("Show gauges", value=True)
-    with c3:
-        st.caption("Click a card to drill into Advanced.")
+# --- Context ---
+def context_tab(asset, freq, dataset_code):
+    st.subheader("Context view")
+    st.write(f"Sentiment gauge and trending keywords could go here for {asset} ({freq}, {dataset_code}).")
 
-    # build BUY/SELL lists
-    buy, sell = [], []
+# =====================
+# Advanced Mode
+# =====================
+def advanced_mode(model_metrics, strategy_metrics, signals_demo):
+    st.header("Show me why")
 
-    # signals_map supports two formats:
-    #  1) compact demo keys like "BTC-W" or objects with no 'asset'
-    #  2) full records with 'asset','freq','dataset'
-    for k, s in signals_map.items():
-        asset = s.get("asset") or (k.split("-")[0] if "-" in k else str(k))
-        freq  = str(s.get("freq") or (k.split("-")[1] if "-" in k and len(k.split("-")) >= 2 else "W")).upper()
-        # normalize dataset; ignore custom ones like 'eng' in simple mode
-        dataset = str(s.get("dataset") or (k.split("-")[2] if "-" in k and len(k.split("-")) >= 3 else "ext")).lower()
-        if dataset not in {"base", "ext"}:
-            dataset = "ext"
-
-        s = {**s, "asset": asset, "freq": freq, "dataset": dataset}
-
-        strength = clamp(s.get("index", 0))
-        if strength < min_strength:
-            continue
-        dec = (s.get("decision") or "").upper()
-        if dec == "BUY":
-            buy.append((asset, s))
-        elif dec == "SELL":
-            sell.append((asset, s))
-
-    col_b, col_s = st.columns(2)
-    with col_b:
-        st.header("BUY")
-        if not buy:
-            st.caption("No BUY signals under current filters.")
-        for a, s in sorted(buy, key=lambda t: -clamp(t[1]["index"]))[:4]:
-            simple_card(a, s, show_gauge=show_gauges)
-
-    with col_s:
-        st.header("SELL")
-        if not sell:
-            st.caption("No SELL signals under current filters.")
-        for a, s in sorted(sell, key=lambda t: -clamp(t[1]["index"]))[:4]:
-            simple_card(a, s, show_gauge=show_gauges)
-
-def advanced_mode(models: pd.DataFrame, strategies: pd.DataFrame, signals: Dict[str, Any]):
-    st.title("Show me why")
-
-    assets = sorted(models.get("asset").dropna().astype(str).unique().tolist())
-    asset_def = st.session_state.get("asset", assets[0] if assets else "")
-    freq_def = st.session_state.get("freq", "W")
-    dataset_def = st.session_state.get("dataset", "ext")
-
-    label_to_code = {"Market only": "base", "Market + Keywords": "ext"}
-    code_to_label = {v: k for k, v in label_to_code.items()}
-    init_label = code_to_label.get(dataset_def, "Market + Keywords")
-
-    colA, colB, colC = st.columns([1.2, 0.9, 1.3])
-    with colA:
-        asset = st.selectbox("Asset", assets, index=(assets.index(asset_def) if asset_def in assets else 0))
-    with colB:
-        freq = st.radio("Frequency", ["D", "W"], horizontal=True,
-                        index=(["D", "W"].index(freq_def) if freq_def in ["D", "W"] else 1))
-    with colC:
-        ds_label = st.radio("Dataset", ["Market only", "Market + Keywords"], horizontal=True,
-                            index=(["Market only", "Market + Keywords"].index(init_label)))
-        dataset_code = label_to_code[ds_label]
+    assets = model_metrics["asset"].unique().tolist()
+    asset = st.selectbox("Asset", assets)
+    freq = st.radio("Frequency", ["D", "W"], horizontal=True)
+    dataset_code = st.radio("Dataset", ["base", "ext"], horizontal=True)
 
     tabs = st.tabs(["Model Comparison", "Keyword Explorer", "Strategy Insights", "Context"])
+
     with tabs[0]:
-        model_comparison_tab(models, asset, freq, dataset_code)
+        model_comparison_tab(model_metrics, asset, freq, dataset_code)
+
     with tabs[1]:
-        keyword_explorer_tab(models, asset, freq)
+        keyword_explorer_tab(model_metrics, asset, freq)  # <- dataset_code removed
+
     with tabs[2]:
-        strategy_insights_tab(strategies, asset, freq, dataset_code)
+        strategy_insights_tab(strategy_metrics, asset, freq, dataset_code)
+
     with tabs[3]:
-        context_tab(signals, asset, freq, dataset_code)
+        context_tab(asset, freq, dataset_code)
 
-# ------------------------------------------------------------
-# App entry
-# ------------------------------------------------------------
-st.set_page_config(page_title="Markets Demo", layout="wide")
+# =====================
+# Main App
+# =====================
+st.set_page_config(layout="wide")
 
-mode = st.sidebar.radio("Mode", ["Simple", "Advanced"],
-                        index=(0 if st.session_state.get("mode", "Simple") == "Simple" else 1))
-
+mode = st.radio("Mode", ["Simple", "Advanced"], horizontal=True)
 if mode == "Simple":
-    st.session_state["mode"] = "Simple"
-    simple_mode()
+    simple_mode(signals_demo)
 else:
-    st.session_state["mode"] = "Advanced"
-    advanced_mode(model_metrics, strategy_metrics, signals_map)
+    advanced_mode(model_metrics, strategy_metrics, signals_demo)
