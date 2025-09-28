@@ -306,22 +306,10 @@ def _uplift_color(v, thr=0.002):
         return "color: inherit"
 
 def keyword_explorer_tab(models: pd.DataFrame, asset: str, freq: str):
-    """
-    Keyword Explorer (redesigned):
-      - No dataset toggle (only Asset + Frequency)
-      - KPI cards: Δ AUC (ext − base), Δ MAE (base − ext)
-      - Split tables: Direction (AUC, Accuracy, F1) & Return (MAE, RMSE, Spearman)
-      - Collapsible bar chart of NORMALISED uplifts at the bottom
-    """
-    st.subheader("Keyword Explorer")
-
-    # Filter to asset & freq
+    st.subheader("Keyword effect (Market only vs Market + Keywords)")
     m = models[(models.get("asset") == asset) & (models.get("freq") == freq)]
-    if m.empty:
-        st.info("No data for this selection.")
-        return
 
-    # Split by dataset & task
+    # prepare base vs ext splits
     cls_b = m[(m.get("dataset") == "base") & (m.get("task") == "CLS")]
     cls_e = m[(m.get("dataset") == "ext")  & (m.get("task") == "CLS")]
     reg_b = m[(m.get("dataset") == "base") & (m.get("task") == "REG")]
@@ -330,140 +318,37 @@ def keyword_explorer_tab(models: pd.DataFrame, asset: str, freq: str):
     def best_max(df, col): return float(df[col].max()) if (not df.empty and col in df) else float("nan")
     def best_min(df, col): return float(df[col].min()) if (not df.empty and col in df) else float("nan")
 
-    # Best scores by dataset
-    best_auc_b, best_auc_e = best_max(cls_b, "auc"), best_max(cls_e, "auc")
-    best_acc_b, best_acc_e = best_max(cls_b, "accuracy"), best_max(cls_e, "accuracy")
-    best_f1_b,  best_f1_e  = best_max(cls_b, "f1"), best_max(cls_e, "f1")
-    best_mae_b, best_mae_e = best_min(reg_b, "mae"), best_min(reg_e, "mae")
-    best_rmse_b, best_rmse_e = best_min(reg_b, "rmse"), best_min(reg_e, "rmse")
-    best_spear_b, best_spear_e = best_max(reg_b, "spearman"), best_max(reg_e, "spearman")
+    rows = []
+    for name, col in [("AUC (trend prediction)", "auc"),
+                      ("Accuracy (trend prediction)", "accuracy"),
+                      ("F1 (trend prediction)", "f1")]:
+        b, e = best_max(cls_b, col), best_max(cls_e, col)
+        if not (np.isnan(b) and np.isnan(e)):
+            rows.append({"Metric": name, "Market only": b, "Market + Keywords": e, "Uplift": e - b})
 
-    # Uplifts (Direction: ext - base; Return: base - ext)
-    d_auc = (best_auc_e - best_auc_b) if not (np.isnan(best_auc_b) or np.isnan(best_auc_e)) else np.nan
-    d_acc = (best_acc_e - best_acc_b) if not (np.isnan(best_acc_b) or np.isnan(best_acc_e)) else np.nan
-    d_f1  = (best_f1_e  - best_f1_b ) if not (np.isnan(best_f1_b ) or np.isnan(best_f1_e )) else np.nan
-    d_mae = (best_mae_b - best_mae_e) if not (np.isnan(best_mae_b) or np.isnan(best_mae_e)) else np.nan
-    d_rmse= (best_rmse_b - best_rmse_e) if not (np.isnan(best_rmse_b) or np.isnan(best_rmse_e)) else np.nan
-    d_spear=(best_spear_e - best_spear_b) if not (np.isnan(best_spear_b) or np.isnan(best_spear_e)) else np.nan
+    b, e = best_min(reg_b, "mae"), best_min(reg_e, "mae")
+    if not (np.isnan(b) and np.isnan(e)):
+        rows.append({"Metric": "MAE (return error, lower is better)", "Market only": b, "Market + Keywords": e, "Uplift": b - e})
 
-    # KPI cards
-    c1, c2 = st.columns(2)
-    with c1:
-        st.metric("Δ AUC (ext − base)", value=("+" if not np.isnan(d_auc) and d_auc>=0 else "") + (f"{d_auc:.3f}" if not np.isnan(d_auc) else "—"))
-    with c2:
-        st.metric("Δ MAE (base − ext)", value=("+" if not np.isnan(d_mae) and d_mae>=0 else "") + (f"{d_mae:.3f}" if not np.isnan(d_mae) else "—"))
+    if "rmse" in m.columns:
+        b, e = best_min(reg_b, "rmse"), best_min(reg_e, "rmse")
+        if not (np.isnan(b) and np.isnan(e)):
+            rows.append({"Metric": "RMSE (return error, lower is better)", "Market only": b, "Market + Keywords": e, "Uplift": b - e})
 
-    # Direction metrics table
-    dir_rows = []
-    if not (np.isnan(best_auc_b) and np.isnan(best_auc_e)):
-        dir_rows.append({"Metric": "AUC", "Market only": best_auc_b, "Market + Keywords": best_auc_e, "Δ": d_auc})
-    if not (np.isnan(best_acc_b) and np.isnan(best_acc_e)):
-        dir_rows.append({"Metric": "Accuracy", "Market only": best_acc_b, "Market + Keywords": best_acc_e, "Δ": d_acc})
-    if not (np.isnan(best_f1_b) and np.isnan(best_f1_e)):
-        dir_rows.append({"Metric": "F1", "Market only": best_f1_b, "Market + Keywords": best_f1_e, "Δ": d_f1})
+    if "spearman" in m.columns:
+        b, e = best_max(reg_b, "spearman"), best_max(reg_e, "spearman")
+        if not (np.isnan(b) and np.isnan(e)):
+            rows.append({"Metric": "Spearman (return correlation)", "Market only": b, "Market + Keywords": e, "Uplift": e - b})
 
-    # Return metrics table
-    ret_rows = []
-    if not (np.isnan(best_mae_b) and np.isnan(best_mae_e)):
-        ret_rows.append({"Metric": "MAE", "Market only": best_mae_b, "Market + Keywords": best_mae_e, "Δ": d_mae})
-    if not (np.isnan(best_rmse_b) and np.isnan(best_rmse_e)):
-        ret_rows.append({"Metric": "RMSE", "Market only": best_rmse_b, "Market + Keywords": best_rmse_e, "Δ": d_rmse})
-    if not (np.isnan(best_spear_b) and np.isnan(best_spear_e)):
-        ret_rows.append({"Metric": "Spearman", "Market only": best_spear_b, "Market + Keywords": best_spear_e, "Δ": d_spear})
+    if not rows:
+        st.info("No comparison available for this selection.")
+        return
 
-    st.markdown("### Direction metrics")
-    if dir_rows:
-        df_dir = pd.DataFrame(dir_rows)
-        styled_dir = (df_dir.style
-                      .format({"Market only": "{:.3f}", "Market + Keywords": "{:.3f}", "Δ": "{:+.3f}"})
-                      .applymap(_uplift_color, subset=["Δ"]))
-        st.dataframe(styled_dir, use_container_width=True, hide_index=True)
-    else:
-        st.caption("No direction metrics available.")
-
-    st.markdown("### Return metrics")
-    if ret_rows:
-        df_ret = pd.DataFrame(ret_rows)
-        styled_ret = (df_ret.style
-                      .format({"Market only": "{:.3f}", "Market + Keywords": "{:.3f}", "Δ": "{:+.3f}"})
-                      .applymap(_uplift_color, subset=["Δ"]))
-        st.dataframe(styled_ret, use_container_width=True, hide_index=True)
-    else:
-        st.caption("No return metrics available.")
-
-    # Side-by-side charts (Direction vs Return)
-    with st.expander("Show metric uplifts (compact view)", expanded=False):
-        import plotly.graph_objects as go
-        col1, col2 = st.columns(2)
-
-        # --- Direction metrics (AUC/Accuracy/F1) as % uplift ---
-        dir_metrics = []
-        dir_vals = []
-        dir_hover = []
-        def pct_uplift(ext_v, base_v):
-            if np.isnan(base_v) or base_v == 0 or np.isnan(ext_v):
-                return 0.0, "N/A"
-            change = (ext_v - base_v) / base_v * 100.0
-            return change, f"base={base_v:.4g}, ext={ext_v:.4g}, Δ%={change:.2f}%"
-        for name, b, e in [("AUC", best_auc_b, best_auc_e),
-                           ("Accuracy", best_acc_b, best_acc_e),
-                           ("F1", best_f1_b, best_f1_e)]:
-            if not (np.isnan(b) and np.isnan(e)):
-                val, hv = pct_uplift(e, b)
-                dir_metrics.append(name); dir_vals.append(val); dir_hover.append(f"{name}: {hv}")
-        with col1:
-            if dir_metrics:
-                colors = ["#2ca02c" if v >= 0 else "#d62728" for v in dir_vals]
-                fig1 = go.Figure(data=[go.Bar(x=dir_metrics, y=dir_vals, marker=dict(color=colors),
-                                              text=[f"{v:.2f}%" for v in dir_vals], textposition="outside",
-                                              hovertext=dir_hover, hoverinfo="text")])
-                fig1.update_layout(title="Direction metrics (Δ% vs base)",
-                                   yaxis_title="Δ vs base (%)", xaxis_title="Metric",
-                                   margin=dict(l=0, r=10, t=30, b=0), height=380)
-                fig1.update_yaxes(zeroline=True, zerolinewidth=1)
-                st.plotly_chart(fig1, use_container_width=True)
-            else:
-                st.caption("No direction metrics to chart.")
-
-        # --- Return metrics (MAE/RMSE) as % reduction; Spearman as absolute Δ ---
-        ret_metrics = []
-        ret_vals = []
-        ret_hover = []
-        def pct_reduction(base_v, ext_v):
-            if np.isnan(base_v) or base_v == 0 or np.isnan(ext_v):
-                return 0.0, "N/A"
-            change = (base_v - ext_v) / base_v * 100.0
-            return change, f"base={base_v:.4g}, ext={ext_v:.4g}, Δ%={change:.2f}%"
-        # MAE, RMSE (% reduction)
-        for name, b, e in [("MAE", best_mae_b, best_mae_e),
-                           ("RMSE", best_rmse_b, best_rmse_e)]:
-            if not (np.isnan(b) and np.isnan(e)):
-                val, hv = pct_reduction(b, e)
-                ret_metrics.append(name); ret_vals.append(val); ret_hover.append(f"{name}: {hv}")
-        # Spearman (absolute Δ)
-        if not (np.isnan(best_spear_b) and np.isnan(best_spear_e)):
-            delta = (best_spear_e - best_spear_b) if (not np.isnan(best_spear_b) and not np.isnan(best_spear_e)) else 0.0
-            ret_metrics.append("Spearman"); ret_vals.append(delta); ret_hover.append(f"Spearman: base={best_spear_b:.4g}, ext={best_spear_e:.4g}, Δ={delta:.4f}")
-        with col2:
-            if ret_metrics:
-                # Colour logic: positive is improvement for all three as defined above
-                colors2 = []
-                for name, v in zip(ret_metrics, ret_vals):
-                    imp = v >= 0  # for Spearman Δ>=0 is improvement; for MAE/RMSE Δ%>=0 is improvement
-                    colors2.append("#2ca02c" if imp else "#d62728")
-                # Format labels: % for MAE/RMSE; abs for Spearman
-                labels = [f"{v:.2f}%" if name in ("MAE","RMSE") else f"{v:.4f}" for name, v in zip(ret_metrics, ret_vals)]
-                fig2 = go.Figure(data=[go.Bar(x=ret_metrics, y=ret_vals, marker=dict(color=colors2),
-                                              text=labels, textposition="outside",
-                                              hovertext=ret_hover, hoverinfo="text")])
-                fig2.update_layout(title="Return metrics (Δ% for MAE/RMSE; Δ for Spearman)",
-                                   yaxis_title="Δ vs base (%) / absolute", xaxis_title="Metric",
-                                   margin=dict(l=0, r=10, t=30, b=0), height=380)
-                fig2.update_yaxes(zeroline=True, zerolinewidth=1)
-                st.plotly_chart(fig2, use_container_width=True)
-            else:
-                st.caption("No return metrics to chart.")
-
+    df = pd.DataFrame(rows)
+    styled = (df.style
+              .format({"Market only": "{:.3f}", "Market + Keywords": "{:.3f}", "Uplift": "{:+.3f}"})
+              .applymap(_uplift_color, subset=["Uplift"]))
+    st.dataframe(styled, use_container_width=True)
 
 def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, dataset_code: str):
     sd = strategies[(strategies.get("asset") == asset) &
