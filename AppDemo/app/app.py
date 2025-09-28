@@ -355,7 +355,6 @@ def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, datas
     st.subheader("Strategy Insights")
 
     df = strategies.copy()
-    # Defensive: ensure required columns exist
     for col in ["asset","freq","dataset","params","family","sharpe","max_dd","ann_return"]:
         if col not in df.columns:
             st.warning(f"Missing column '{col}' in strategies data.")
@@ -363,19 +362,16 @@ def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, datas
 
     df = df[(df["asset"] == asset) & (df["freq"] == freq) & (df["dataset"] == dataset)].copy()
 
-    # -------- robust label parsing --------
+    # Robust label parsing
     def safe_parse_label_cell(val, part: str) -> str:
         try:
-            # string case with regex
             if isinstance(val, str):
                 return parse_label(val, part)
-            # dict-like case
             if isinstance(val, dict):
                 if part == "model":
                     return str(val.get("model", ""))
                 else:
                     return str(val.get("rule", val.get("ta", "")))
-            # gracefully handle NaN / others
             return ""
         except Exception:
             return ""
@@ -424,7 +420,7 @@ def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, datas
     # Summary
     st.caption(f"Showing **{len(f):,}** strategies across **{f['Family'].nunique()}** family(ies).")
 
-    # Format & style
+    # Prepare display
     show = f[["Family","Model","Rule","Sharpe","Max DD","Annual Return"]].copy()
     for col in ["Sharpe","Max DD","Annual Return"]:
         show[col] = pd.to_numeric(show[col], errors="coerce")
@@ -432,12 +428,26 @@ def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, datas
     def fmt_dec(x):
         return f"{x:.2f}" if pd.notna(x) else "-"
 
+    # --- Styling without hard dependency on matplotlib ---
+    has_mpl = True
+    try:
+        import matplotlib  # noqa: F401
+    except Exception:
+        has_mpl = False
+
     styled = (show.style
         .format({"Sharpe": fmt_dec, "Max DD": fmt_dec, "Annual Return": fmt_dec})
         .apply(lambda s: ["color:#e74c3c" if (pd.notna(v) and v < 0) else "" for v in s] if s.name=="Max DD" else [""]*len(s))
         .bar(subset=["Sharpe"], align="zero")
-        .background_gradient(subset=["Annual Return"], cmap="Greens")
     )
+
+    if has_mpl:
+        # Pretty gradient if matplotlib is available
+        styled = styled.background_gradient(subset=["Annual Return"], cmap="Greens")
+    else:
+        # Fallback: simple text color for Annual Return (green=pos, red=neg)
+        styled = styled.apply(lambda s: ["color:#2ecc71" if (pd.notna(v) and v >= 0) else ("color:#e74c3c" if pd.notna(v) else "") for v in s] if s.name=="Annual Return" else [""]*len(s))
+
     st.dataframe(styled, use_container_width=True, hide_index=True)
 
     # Download button
