@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import json
-import numpy as np
 from pathlib import Path
 from typing import Dict, Any, List
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -133,10 +133,89 @@ def clamp(v: Any, lo: int = 0, hi: int = 100) -> int:
     except Exception:
         return lo
 
-def dash_na(df: pd.DataFrame):
-    # Replace NaN/None with dash for display
-    return df.replace([np.nan, None], "-")
+def dash_na(df: pd.DataFrame) -> pd.DataFrame:
+    return df.replace([np.nan, None], "–")
 
+# ------------------------------------------------------------
+# Gauges
+# ------------------------------------------------------------
+def _bands(decision: str) -> List[Dict[str, Any]]:
+    d = (decision or "").upper()
+    if d == "SELL":
+        return [{"range": [0, 40], "color": "green"},
+                {"range": [40, 60], "color": "yellow"},
+                {"range": [60, 100], "color": "red"}]
+    return [{"range": [0, 40], "color": "red"},
+            {"range": [40, 60], "color": "yellow"},
+            {"range": [60, 100], "color": "green"}]
+
+def gauge(val: int, decision: str, title: str, show_number: bool, height: int = 150) -> go.Figure:
+    v = clamp(val)
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number" if show_number else "gauge",
+        value=v,
+        number={'font': {'size': 28}} if show_number else None,
+        title={"text": title, "font": {"size": 12}},
+        gauge={"axis": {"range": [0, 100]},
+               "bar": {"color": "black", "thickness": 0.25},
+               "steps": _bands(decision),
+               "threshold": {"line": {"color": "black", "width": 3}, "thickness": 0.7, "value": v}}
+    ))
+    fig.update_layout(height=height, margin=dict(l=2, r=2, t=8, b=2))
+    return fig
+
+# ------------------------------------------------------------
+# Reasons for Simple Mode
+# ------------------------------------------------------------
+def reason_text(sig: Dict[str, Any]) -> str:
+    decision = (sig.get("decision") or "").upper()
+    fam = (sig.get("family") or "").upper()
+    freq = "Weekly" if str(sig.get("freq", "")).upper() == "W" else "Daily"
+    ds = (sig.get("dataset") or "").upper()
+    # Classification: prob/thr
+    if fam == "CLS" and pd.notna(sig.get("prob")):
+        p = float(sig["prob"])
+        thr = float(sig.get("thr", 0.6))
+        pdn = 1.0 - p
+        if p >= thr:
+            core = f"Model predicts ↑ with {p:.0%} confidence — upside edge"
+        elif pdn >= thr:
+            core = f"Model predicts ↓ with {pdn:.0%} confidence — downside edge"
+        else:
+            core = f"Model confidence {p:.0%} — no clear edge"
+    # Regression: pred_ret
+    elif fam == "REG" and pd.notna(sig.get("pred_ret")):
+        pr = float(sig["pred_ret"])
+        bias = "upside" if pr >= 0 else "downside"
+        core = f"Model projects {pr:+.2%} expected return — {bias} bias"
+    else:
+        core = f"Model suggests {decision.title()}"
+    return f"{core}. ({freq} · {ds})"
+
+# ------------------------------------------------------------
+# Best TA (for a quick confirm line in Simple Mode)
+# ------------------------------------------------------------
+def best_ta(asset: str, freq: str, dataset: str) -> str | None:
+    sm = strategy_metrics
+    sub = sm[(sm.get("asset") == asset) &
+             (sm.get("freq") == freq) &
+             (sm.get("dataset") == dataset) &
+             (sm.get("family").str.upper() == "HYBRID_CONF")]
+    if sub.empty:
+        return None
+    row = sub.sort_values("sharpe", ascending=False).iloc[0]
+    info = parse_strategy_params(row.get("params", ""))
+    return info["ta_label"] or None
+
+# ------------------------------------------------------------
+# Simple Mode card
+# ------------------------------------------------------------
+def _pill(text: str, tone: str) -> str:
+    colors = {"good": ("#1e9e49", "#e7f6ec"),
+              "bad": ("#d9534f", "#fdeaea"),
+              "neutral": ("#666", "#efefef")}
+    fg, bg = colors.get(tone, colors["neutral"])
+    return f"<span style='background:{bg};color:{fg};padding:3px 10px;border-radius:999px;font-weight:600;margin-left:6px;'>{text}</span>"
 
 def simple_card(asset: str, sig: Dict[str, Any], show_gauge: bool):
     decision = (sig.get("decision") or "").upper()
@@ -236,7 +315,13 @@ def keyword_explorer_tab(models: pd.DataFrame, asset: str, freq: str):
     """
     st.subheader("Keyword Explorer")
 
+    # Filter to asset & freq
     m = models[(models.get("asset") == asset) & (models.get("freq") == freq)]
+    if m.empty:
+        st.info("No data for this selection.")
+        return
+
+    # Split by dataset & task
     cls_b = m[(m.get("dataset") == "base") & (m.get("task") == "CLS")]
     cls_e = m[(m.get("dataset") == "ext")  & (m.get("task") == "CLS")]
     reg_b = m[(m.get("dataset") == "base") & (m.get("task") == "REG")]
@@ -286,10 +371,6 @@ def keyword_explorer_tab(models: pd.DataFrame, asset: str, freq: str):
     if not (np.isnan(best_spear_b) and np.isnan(best_spear_e)):
         ret_rows.append({"Metric": "Spearman", "Market only": best_spear_b, "Market + Keywords": best_spear_e, "Δ": d_spear})
 
-    if not dir_rows and not ret_rows:
-        st.info("No comparison available for this selection.")
-        return
-
     st.markdown("### Direction metrics")
     if dir_rows:
         df_dir = pd.DataFrame(dir_rows)
@@ -317,7 +398,7 @@ def keyword_explorer_tab(models: pd.DataFrame, asset: str, freq: str):
 
         if metrics:
             import plotly.graph_objects as go
-            z = np.array(uplifts, dtype=float).reshape(len(metrics), 1)  # rows = metrics, single column
+            z = np.array(uplifts, dtype=float).reshape(len(metrics), 1)
             fig = go.Figure(data=go.Heatmap(
                 z=z,
                 x=["Δ"],
@@ -450,7 +531,6 @@ def simple_mode():
 def advanced_mode(models: pd.DataFrame, strategies: pd.DataFrame, signals: Dict[str, Any]):
     st.title("Show me why")
 
-    # Defaults
     assets = sorted(models.get("asset").dropna().astype(str).unique().tolist())
     asset_def = st.session_state.get("asset", assets[0] if assets else "")
     freq_def = st.session_state.get("freq", "W")
@@ -460,44 +540,27 @@ def advanced_mode(models: pd.DataFrame, strategies: pd.DataFrame, signals: Dict[
     code_to_label = {v: k for k, v in label_to_code.items()}
     init_label = code_to_label.get(dataset_def, "Market + Keywords")
 
-    # Header controls — only Asset + Frequency
-    colA, colB = st.columns([1.2, 0.9])
+    colA, colB, colC = st.columns([1.2, 0.9, 1.3])
     with colA:
         asset = st.selectbox("Asset", assets, index=(assets.index(asset_def) if asset_def in assets else 0))
     with colB:
         freq = st.radio("Frequency", ["D", "W"], horizontal=True,
                         index=(["D", "W"].index(freq_def) if freq_def in ["D", "W"] else 1))
-
-    # Persist
-    st.session_state["asset"] = asset
-    st.session_state["freq"] = freq
+    with colC:
+        ds_label = st.radio("Dataset", ["Market only", "Market + Keywords"], horizontal=True,
+                            index=(["Market only", "Market + Keywords"].index(init_label)))
+        dataset_code = label_to_code[ds_label]
 
     tabs = st.tabs(["Model Comparison", "Keyword Explorer", "Strategy Insights", "Context"])
-
     with tabs[0]:
-        ds_label0 = st.radio("Dataset", ["Market only", "Market + Keywords"], horizontal=True,
-                              index=(["Market only", "Market + Keywords"].index(init_label)))
-        dataset_code0 = label_to_code[ds_label0]
-        st.session_state["dataset"] = dataset_code0
-        model_comparison_tab(models, asset, freq, dataset_code0)
-
+        model_comparison_tab(models, asset, freq, dataset_code)
     with tabs[1]:
-        # No dataset toggle here
         keyword_explorer_tab(models, asset, freq)
-
     with tabs[2]:
-        ds_label2 = st.radio("Dataset", ["Market only", "Market + Keywords"], horizontal=True,
-                              index=(["Market only", "Market + Keywords"].index(st.session_state.get("dataset", init_label))))
-        dataset_code2 = label_to_code[ds_label2]
-        st.session_state["dataset"] = dataset_code2
-        strategy_insights_tab(strategies, asset, freq, dataset_code2)
-
+        strategy_insights_tab(strategies, asset, freq, dataset_code)
     with tabs[3]:
-        ds_label3 = st.radio("Dataset", ["Market only", "Market + Keywords"], horizontal=True,
-                              index=(["Market only", "Market + Keywords"].index(st.session_state.get("dataset", init_label))))
-        dataset_code3 = label_to_code[ds_label3]
-        st.session_state["dataset"] = dataset_code3
-        context_tab(signals, asset, freq, dataset_code3)
+        context_tab(signals, asset, freq, dataset_code)
+
 # ------------------------------------------------------------
 # App entry
 # ------------------------------------------------------------
