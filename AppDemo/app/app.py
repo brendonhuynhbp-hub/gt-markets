@@ -469,8 +469,9 @@ def advanced_mode(models: pd.DataFrame, strategies: pd.DataFrame, signals: Dict[
     st.title("Show me why")
 
     # Session defaults
-    assets = sorted(models.get("asset").dropna().astype(str).unique().tolist())
-    asset_def = st.session_state.get("asset", assets[0] if assets else "")
+    assets_raw = models["asset"].dropna().astype(str).unique().tolist() if ("asset" in models.columns and len(models)) else []
+    assets = sorted(assets_raw) if assets_raw else ["BTC", "GOLD", "OIL", "USDCNY"]
+    asset_def = st.session_state.get("asset", assets[0] if assets else "BTC")
     freq_def = st.session_state.get("freq", "W")
     dataset_def = st.session_state.get("dataset", "ext")
 
@@ -486,6 +487,10 @@ def advanced_mode(models: pd.DataFrame, strategies: pd.DataFrame, signals: Dict[
         freq = st.radio("Frequency", ["D", "W"], horizontal=True,
                         index=(["D", "W"].index(freq_def) if freq_def in ["D", "W"] else 1))
 
+    # Persist selections
+    st.session_state["asset"] = asset
+    st.session_state["freq"] = freq
+
     # Tabs
     tabs = st.tabs(["Model Comparison", "Keyword Explorer", "Strategy Insights", "Context"])
 
@@ -493,6 +498,7 @@ def advanced_mode(models: pd.DataFrame, strategies: pd.DataFrame, signals: Dict[
         ds_label0 = st.radio("Dataset", ["Market only", "Market + Keywords"], horizontal=True,
                               index=(["Market only", "Market + Keywords"].index(init_label)))
         dataset_code0 = label_to_code[ds_label0]
+        st.session_state["dataset"] = dataset_code0
         model_comparison_tab(models, asset, freq, dataset_code0)
 
     with tabs[1]:
@@ -501,12 +507,21 @@ def advanced_mode(models: pd.DataFrame, strategies: pd.DataFrame, signals: Dict[
 
     with tabs[2]:
         ds_label2 = st.radio("Dataset", ["Market only", "Market + Keywords"], horizontal=True,
-                              index=(["Market only", "Market + Keywords"].index(init_label)))
+                              index=(["Market only", "Market + Keywords"].index(st.session_state.get("dataset", init_label))))
         dataset_code2 = label_to_code[ds_label2]
+        st.session_state["dataset"] = dataset_code2
         strategy_insights_tab(strategies, asset, freq, dataset_code2)
 
     with tabs[3]:
         ds_label3 = st.radio("Dataset", ["Market only", "Market + Keywords"], horizontal=True,
-                              index=(["Market only", "Market + Keywords"].index(init_label)))
+                              index=(["Market only", "Market + Keywords"].index(st.session_state.get("dataset", init_label))))
         dataset_code3 = label_to_code[ds_label3]
+        st.session_state["dataset"] = dataset_code3
         context_tab(signals, asset, freq, dataset_code3)
+
+    # Safety: show quick note if nothing matches
+    filt_any = (
+        (models["asset"] == asset) & (models["freq"] == freq)
+    ).sum() if ("asset" in models and "freq" in models) else 0
+    if filt_any == 0:
+        st.info("No rows for this selection. Try switching frequency or asset.")
