@@ -391,44 +391,78 @@ def keyword_explorer_tab(models: pd.DataFrame, asset: str, freq: str):
     else:
         st.caption("No return metrics available.")
 
-    # Normalised uplift chart (single combined)
-    with st.expander("Show normalised uplifts (Δ% vs base)", expanded=False):
-        rows = []
-        if not (np.isnan(best_auc_b) and np.isnan(best_auc_e)):
-            rows.append(("AUC", best_auc_b, best_auc_e, "direction"))
-        if not (np.isnan(best_acc_b) and np.isnan(best_acc_e)):
-            rows.append(("Accuracy", best_acc_b, best_acc_e, "direction"))
-        if not (np.isnan(best_f1_b) and np.isnan(best_f1_e)):
-            rows.append(("F1", best_f1_b, best_f1_e, "direction"))
-        if not (np.isnan(best_mae_b) and np.isnan(best_mae_e)):
-            rows.append(("MAE", best_mae_b, best_mae_e, "return"))
-        if not (np.isnan(best_rmse_b) and np.isnan(best_rmse_e)):
-            rows.append(("RMSE", best_rmse_b, best_rmse_e, "return"))
+    # Side-by-side charts (Direction vs Return)
+    with st.expander("Show metric uplifts (compact view)", expanded=False):
+        import plotly.graph_objects as go
+        col1, col2 = st.columns(2)
+
+        # --- Direction metrics (AUC/Accuracy/F1) as % uplift ---
+        dir_metrics = []
+        dir_vals = []
+        dir_hover = []
+        def pct_uplift(ext_v, base_v):
+            if np.isnan(base_v) or base_v == 0 or np.isnan(ext_v):
+                return 0.0, "N/A"
+            change = (ext_v - base_v) / base_v * 100.0
+            return change, f"base={base_v:.4g}, ext={ext_v:.4g}, Δ%={change:.2f}%"
+        for name, b, e in [("AUC", best_auc_b, best_auc_e),
+                           ("Accuracy", best_acc_b, best_acc_e),
+                           ("F1", best_f1_b, best_f1_e)]:
+            if not (np.isnan(b) and np.isnan(e)):
+                val, hv = pct_uplift(e, b)
+                dir_metrics.append(name); dir_vals.append(val); dir_hover.append(f"{name}: {hv}")
+        with col1:
+            if dir_metrics:
+                colors = ["#2ca02c" if v >= 0 else "#d62728" for v in dir_vals]
+                fig1 = go.Figure(data=[go.Bar(x=dir_metrics, y=dir_vals, marker=dict(color=colors),
+                                              text=[f"{v:.2f}%" for v in dir_vals], textposition="outside",
+                                              hovertext=dir_hover, hoverinfo="text")])
+                fig1.update_layout(title="Direction metrics (Δ% vs base)",
+                                   yaxis_title="Δ vs base (%)", xaxis_title="Metric",
+                                   margin=dict(l=0, r=10, t=30, b=0), height=380)
+                fig1.update_yaxes(zeroline=True, zerolinewidth=1)
+                st.plotly_chart(fig1, use_container_width=True)
+            else:
+                st.caption("No direction metrics to chart.")
+
+        # --- Return metrics (MAE/RMSE) as % reduction; Spearman as absolute Δ ---
+        ret_metrics = []
+        ret_vals = []
+        ret_hover = []
+        def pct_reduction(base_v, ext_v):
+            if np.isnan(base_v) or base_v == 0 or np.isnan(ext_v):
+                return 0.0, "N/A"
+            change = (base_v - ext_v) / base_v * 100.0
+            return change, f"base={base_v:.4g}, ext={ext_v:.4g}, Δ%={change:.2f}%"
+        # MAE, RMSE (% reduction)
+        for name, b, e in [("MAE", best_mae_b, best_mae_e),
+                           ("RMSE", best_rmse_b, best_rmse_e)]:
+            if not (np.isnan(b) and np.isnan(e)):
+                val, hv = pct_reduction(b, e)
+                ret_metrics.append(name); ret_vals.append(val); ret_hover.append(f"{name}: {hv}")
+        # Spearman (absolute Δ)
         if not (np.isnan(best_spear_b) and np.isnan(best_spear_e)):
-            rows.append(("Spearman", best_spear_b, best_spear_e, "return"))
-        if rows:
-            import plotly.graph_objects as go
-            metrics, pct, hover = [], [], []
-            for name, base_v, ext_v, family in rows:
-                if np.isnan(base_v) or base_v == 0:
-                    change = np.nan
-                else:
-                    if family == "direction":
-                        change = (ext_v - base_v) / base_v
-                    else:
-                        change = (base_v - ext_v) / base_v
-                metrics.append(name)
-                pct.append(change if not np.isnan(change) else 0.0)
-                hover.append(f"{name}: base={base_v:.4g}, ext={ext_v:.4g}, Δ%={(change*100 if not np.isnan(change) else 0):.2f}%")
-            colors = ["#2ca02c" if val >= 0 else "#d62728" for val in pct]
-            fig = go.Figure(data=[go.Bar(x=metrics, y=[v*100 for v in pct], text=[f"{v*100:.2f}%" for v in pct],
-                                         textposition="outside", marker=dict(color=colors), hovertext=hover, hoverinfo="text")])
-            fig.update_layout(yaxis_title="Δ vs base (%)", xaxis_title="Metric",
-                              margin=dict(l=0, r=10, t=10, b=0), height=420)
-            fig.update_yaxes(zeroline=True, zerolinewidth=1)
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.caption("No data to chart.")
+            delta = (best_spear_e - best_spear_b) if (not np.isnan(best_spear_b) and not np.isnan(best_spear_e)) else 0.0
+            ret_metrics.append("Spearman"); ret_vals.append(delta); ret_hover.append(f"Spearman: base={best_spear_b:.4g}, ext={best_spear_e:.4g}, Δ={delta:.4f}")
+        with col2:
+            if ret_metrics:
+                # Colour logic: positive is improvement for all three as defined above
+                colors2 = []
+                for name, v in zip(ret_metrics, ret_vals):
+                    imp = v >= 0  # for Spearman Δ>=0 is improvement; for MAE/RMSE Δ%>=0 is improvement
+                    colors2.append("#2ca02c" if imp else "#d62728")
+                # Format labels: % for MAE/RMSE; abs for Spearman
+                labels = [f"{v:.2f}%" if name in ("MAE","RMSE") else f"{v:.4f}" for name, v in zip(ret_metrics, ret_vals)]
+                fig2 = go.Figure(data=[go.Bar(x=ret_metrics, y=ret_vals, marker=dict(color=colors2),
+                                              text=labels, textposition="outside",
+                                              hovertext=ret_hover, hoverinfo="text")])
+                fig2.update_layout(title="Return metrics (Δ% for MAE/RMSE; Δ for Spearman)",
+                                   yaxis_title="Δ vs base (%) / absolute", xaxis_title="Metric",
+                                   margin=dict(l=0, r=10, t=30, b=0), height=380)
+                fig2.update_yaxes(zeroline=True, zerolinewidth=1)
+                st.plotly_chart(fig2, use_container_width=True)
+            else:
+                st.caption("No return metrics to chart.")
 
 
 def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, dataset_code: str):
