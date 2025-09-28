@@ -458,20 +458,27 @@ def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, datas
     sd_tidy["fam_sort"] = sd_tidy["family"].apply(lambda x: fam_order.index(x) if x in fam_order else 99)
 
     cols = ["family","model_label","rule_label","sharpe","maxdd","ann_return"]
-    df = (sd_tidy
-          .sort_values(["fam_sort","sharpe"], ascending=[True, False])
-          [cols].rename(columns={
-              "family":"Family",
-              "model_label":"Model",
-              "rule_label":"Rule",
-              "sharpe":"Sharpe",
-              "maxdd":"Max DD",
-              "ann_return":"Annual Return"
-          })
-          .round({"Sharpe":3, "Max DD":3, "Annual Return":3})
-          .reset_index(drop=True))
+    # --- build table safely (fix column names) ---
+cols_wanted = ["family", "model_label", "rule_label", "sharpe", "max_dd", "ann_return"]
+cols_avail  = [c for c in cols_wanted if c in sd_tidy.columns]
 
-    st.dataframe(dash_na(df), use_container_width=True)
+df = (
+    sd_tidy
+    .sort_values(["fam_sort", "sharpe"], ascending=[True, False])
+    [cols_avail]
+    .rename(columns={
+        "family": "Family",
+        "model_label": "Model",
+        "rule_label": "Rule",
+        "sharpe": "Sharpe",
+        "max_dd": "Max DD",           # ✅ correct key
+        "ann_return": "Annual Return"
+    })
+    .round({"Sharpe": 3, "Max DD": 3, "Annual Return": 3})
+    .reset_index(drop=True)
+)
+st.dataframe(dash_na(df), use_container_width=True)
+
 
 def context_tab(signals: dict, asset: str, freq: str, dataset_code: str):
     sig = None
