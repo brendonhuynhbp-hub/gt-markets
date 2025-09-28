@@ -71,6 +71,13 @@ MODEL_MAP = {
     "LR_cls": "Logistic Regression", "LR_reg": "Linear Regression",
     "MLP": "MLP", "MLP_cls": "MLP", "MLP_reg": "MLP",
 }
+
+def _uplift_color(v, thr=0.002):
+    if pd.isna(v): return "color: inherit"
+    if v > thr:    return "color: #1e9e49; font-weight: 600"   # green
+    if v < -thr:   return "color: #d9534f; font-weight: 600"   # red
+    return "color: #999999"                                     # grey (near zero)
+
 def friendly_model_name(x: str) -> str:
     if not isinstance(x, str): return ""
     base = x.split("_")[0]
@@ -372,22 +379,74 @@ def model_comparison_tab(models: pd.DataFrame, asset: str, freq: str, dataset_co
 
 def keyword_explorer_tab(models: pd.DataFrame, asset: str, freq: str):
     st.subheader("Keyword effect (Market only vs Market + Keywords)")
-    cls_base = models[(models["asset"]==asset)&(models["freq"]==freq)&(models["dataset"]=="base")&(models["task"]=="CLS")]
-    cls_ext  = models[(models["asset"]==asset)&(models["freq"]==freq)&(models["dataset"]=="ext") &(models["task"]=="CLS")]
-    reg_base = models[(models["asset"]==asset)&(models["freq"]==freq)&(models["dataset"]=="base")&(models["task"]=="REG")]
-    reg_ext  = models[(models["asset"]==asset)&(models["freq"]==freq)&(models["dataset"]=="ext") &(models["task"]=="REG")]
-    rows=[]
-    if not cls_base.empty and not cls_ext.empty:
-        rows.append({"Metric":"AUC (direction)","Market only":cls_base["auc"].max(),"Market + Keywords":cls_ext["auc"].max(),
-                     "Uplift":cls_ext["auc"].max()-cls_base["auc"].max()})
-    if not reg_base.empty and not reg_ext.empty:
-        rows.append({"Metric":"MAE (return)","Market only":reg_base["mae"].min(),"Market + Keywords":reg_ext["mae"].min(),
-                     "Uplift":reg_base["mae"].min()-reg_ext["mae"].min()})
-    if rows:
-        df = pd.DataFrame(rows).round(3)
-        st.dataframe(dash_na(df), use_container_width=True)
-    else:
+
+    # Slice once
+    m = models[(models["asset"] == asset) & (models["freq"] == freq)]
+    cls_b = m[(m["dataset"] == "base") & (m["task"] == "CLS")]
+    cls_e = m[(m["dataset"] == "ext")  & (m["task"] == "CLS")]
+    reg_b = m[(m["dataset"] == "base") & (m["task"] == "REG")]
+    reg_e = m[(m["dataset"] == "ext")  & (m["task"] == "REG")]
+
+    # If nothing to compare
+    if (cls_b.empty and cls_e.empty) and (reg_b.empty and reg_e.empty):
         st.info("No comparison available for this selection.")
+        return
+
+    # Helpers for best values by metric
+    def best_max(df, col):  # higher is better
+        return float(df[col].max()) if (not df.empty and col in df) else float("nan")
+    def best_min(df, col):  # lower is better
+        return float(df[col].min()) if (not df.empty and col in df) else float("nan")
+
+    rows = []
+
+    # --- Direction/Classification (higher is better)
+    auc_b, auc_e = best_max(cls_b, "auc"), best_max(cls_e, "auc")
+    acc_b, acc_e = best_max(cls_b, "accuracy"), best_max(cls_e, "accuracy")
+    f1_b,  f1_e  = best_max(cls_b, "f1"), best_max(cls_e, "f1")
+
+    if not (np.isnan(auc_b) and np.isnan(auc_e)):
+        rows.append({"Metric": "AUC (trend prediction)", "Market only": auc_b, "Market + Keywords": auc_e, "Uplift": auc_e - auc_b})
+    if not (np.isnan(acc_b) and np.isnan(acc_e)):
+        rows.append({"Metric": "Accuracy (trend prediction)", "Market only": acc_b, "Market + Keywords": acc_e, "Uplift": acc_e - acc_b})
+    if not (np.isnan(f1_b) and np.isnan(f1_e)):
+        rows.append({"Metric": "F1 (trend prediction)", "Market only": f1_b, "Market + Keywords": f1_e, "Uplift": f1_e - f1_b})
+
+    # --- Return/Regression (errors lower is better, correlation higher)
+    mae_b, mae_e = best_min(reg_b, "mae"), best_min(reg_e, "mae")
+    rmse_b, rmse_e = best_min(reg_b, "rmse"), best_min(reg_e, "rmse")
+    sp_b, sp_e = best_max(reg_b, "spearman"), best_max(reg_e, "spearman")
+
+    if not (np.isnan(mae_b) and np.isnan(mae_e)):
+        rows.append({"Metric": "MAE (return error, lower is better)", "Market only": mae_b, "Market + Keywords": mae_e, "Uplift": mae_b - mae_e})
+    if not (np.isnan(rmse_b) and np.isnan(rmse_e)):
+        rows.append({"Metric": "RMSE (return error, lower is better)", "Market only": rmse_b, "Market + Keywords": rmse_e, "Uplift": rmse_b - rmse_e})
+    if not (np.isnan(sp_b) and np.isnan(sp_e)):
+        rows.append({"Metric": "Spearman (return correlation)", "Market only": sp_b, "Market + Keywords": sp_e, "Uplift": sp_e - sp_b})
+
+    if not rows:
+        st.info("Metrics missing for this selection.")
+        return
+
+    df = pd.DataFrame(rows)
+
+    # Tiny one-liner insight
+    pos = (df["Uplift"] > 0.002).sum()
+    neg = (df["Uplift"] < -0.002).sum()
+    if pos or neg:
+        verdict = "mixed"
+        if pos and not neg: verdict = "positive"
+        elif neg and not pos: verdict = "negative"
+        st.caption(f"Keywords effect: **{verdict}** — {pos} improved, {neg} worsened (|Δ| > 0.002).")
+
+    # Style & show
+    styled = (
+        df.style
+          .format({"Market only": "{:.3f}", "Market + Keywords": "{:.3f}", "Uplift": "{:+.3f}"})
+          .applymap(_uplift_color, subset=["Uplift"])
+    )
+    st.dataframe(styled, use_container_width=True)
+
 
 def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, dataset_code: str):
     sd = strategies[(strategies["asset"]==asset) & (strategies["freq"]==freq) & (strategies["dataset"]==dataset_code)]
