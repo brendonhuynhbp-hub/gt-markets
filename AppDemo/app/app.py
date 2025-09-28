@@ -1,6 +1,7 @@
+import re
 # AppDemo/app/app.py
 from __future__ import annotations
-import re
+
 import json
 from pathlib import Path
 from typing import Dict, Any, List
@@ -354,12 +355,36 @@ def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, datas
     st.subheader("Strategy Insights")
 
     df = strategies.copy()
-    df = df[(df["asset"] == asset) & (df["freq"] == freq) & (df["dataset"] == dataset)]
+    # Defensive: ensure required columns exist
+    for col in ["asset","freq","dataset","params","family","sharpe","max_dd","ann_return"]:
+        if col not in df.columns:
+            st.warning(f"Missing column '{col}' in strategies data.")
+            return
 
-    # Parse pretty labels if not present
-    if "model_label" not in df or "rule_label" not in df:
-        df["model_label"] = df["params"].apply(lambda s: parse_label(s, "model") if isinstance(s, str) else "")
-        df["rule_label"]  = df["params"].apply(lambda s: parse_label(s, "rule")  if isinstance(s, str) else "")
+    df = df[(df["asset"] == asset) & (df["freq"] == freq) & (df["dataset"] == dataset)].copy()
+
+    # -------- robust label parsing --------
+    def safe_parse_label_cell(val, part: str) -> str:
+        try:
+            # string case with regex
+            if isinstance(val, str):
+                return parse_label(val, part)
+            # dict-like case
+            if isinstance(val, dict):
+                if part == "model":
+                    return str(val.get("model", ""))
+                else:
+                    return str(val.get("rule", val.get("ta", "")))
+            # gracefully handle NaN / others
+            return ""
+        except Exception:
+            return ""
+
+    if "model_label" not in df.columns:
+        df["model_label"] = df["params"].apply(lambda v: safe_parse_label_cell(v, "model"))
+    if "rule_label" not in df.columns:
+        df["rule_label"]  = df["params"].apply(lambda v: safe_parse_label_cell(v, "rule"))
+
     df.rename(columns={"family":"Family","model_label":"Model","rule_label":"Rule",
                        "sharpe":"Sharpe","max_dd":"Max DD","ann_return":"Annual Return"}, inplace=True)
 
@@ -380,18 +405,17 @@ def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, datas
     q = st.text_input("Search in Rule (regex ok)", "")
 
     # Filter
-    f = df[df["Family"].isin(sel_fam) & df["Model"].isin(sel_mod)]
+    f = df[df["Family"].isin(sel_fam) & df["Model"].isin(sel_mod)].copy()
     if q.strip():
         try:
-            f = f[f["Rule"].str.contains(q, case=False, regex=True, na=False)]
+            f = f[f["Rule"].fillna("").str.contains(q, case=False, regex=True)]
         except re.error:
             st.warning("Invalid regex in search; showing all.")
 
-    f = (f
-         .drop_duplicates(subset=["Family","Model","Rule","Sharpe","Max DD","Annual Return"])
-         .reset_index(drop=True))
+    # De-dupe & Top-N
+    f = (f.drop_duplicates(subset=["Family","Model","Rule","Sharpe","Max DD","Annual Return"])
+           .reset_index(drop=True))
 
-    # Top-N per family by chosen metric
     asc = (sort_by == "Max DD")  # more negative is worse, so ascending
     f = (f.sort_values(by=[sort_by], ascending=asc)
            .groupby("Family", group_keys=False)
@@ -402,16 +426,15 @@ def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, datas
 
     # Format & style
     show = f[["Family","Model","Rule","Sharpe","Max DD","Annual Return"]].copy()
-    show["Sharpe"] = show["Sharpe"].astype(float)
-    show["Annual Return"] = show["Annual Return"].astype(float)
-    show["Max DD"] = show["Max DD"].astype(float)
+    for col in ["Sharpe","Max DD","Annual Return"]:
+        show[col] = pd.to_numeric(show[col], errors="coerce")
 
-    def fmt_dec(x): 
+    def fmt_dec(x):
         return f"{x:.2f}" if pd.notna(x) else "-"
 
     styled = (show.style
         .format({"Sharpe": fmt_dec, "Max DD": fmt_dec, "Annual Return": fmt_dec})
-        .apply(lambda s: ["color:#e74c3c" if v < 0 else "" for v in s] if s.name=="Max DD" else [""]*len(s))
+        .apply(lambda s: ["color:#e74c3c" if (pd.notna(v) and v < 0) else "" for v in s] if s.name=="Max DD" else [""]*len(s))
         .bar(subset=["Sharpe"], align="zero")
         .background_gradient(subset=["Annual Return"], cmap="Greens")
     )
