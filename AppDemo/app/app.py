@@ -307,17 +307,15 @@ def _uplift_color(v, thr=0.002):
 
 def keyword_explorer_tab(models: pd.DataFrame, asset: str, freq: str):
     """
-    Redesigned Keyword Explorer:
-      - No dataset toggle (only Asset + Frequency are respected from header)
-      - Top KPI cards for Δ AUC (CLS, higher is better) and Δ MAE (REG, lower is better)
-      - Split tables: Direction metrics (AUC, Accuracy, F1) and Return metrics (MAE, RMSE, Spearman)
-      - Collapsible heatmap at the bottom showing uplifts
+    Keyword Explorer (redesigned):
+      - No dataset toggle (only Asset + Frequency)
+      - KPI cards: Δ AUC (ext − base), Δ MAE (base − ext)
+      - Split tables: Direction (AUC, Accuracy, F1) & Return (MAE, RMSE, Spearman)
+      - Collapsible heatmap of uplifts at the bottom
     """
     st.subheader("Keyword Explorer")
 
     m = models[(models.get("asset") == asset) & (models.get("freq") == freq)]
-
-    # prepare base vs ext splits
     cls_b = m[(m.get("dataset") == "base") & (m.get("task") == "CLS")]
     cls_e = m[(m.get("dataset") == "ext")  & (m.get("task") == "CLS")]
     reg_b = m[(m.get("dataset") == "base") & (m.get("task") == "REG")]
@@ -326,25 +324,23 @@ def keyword_explorer_tab(models: pd.DataFrame, asset: str, freq: str):
     def best_max(df, col): return float(df[col].max()) if (not df.empty and col in df) else float("nan")
     def best_min(df, col): return float(df[col].min()) if (not df.empty and col in df) else float("nan")
 
-    # compute best scores
+    # Best scores by dataset
     best_auc_b, best_auc_e = best_max(cls_b, "auc"), best_max(cls_e, "auc")
     best_acc_b, best_acc_e = best_max(cls_b, "accuracy"), best_max(cls_e, "accuracy")
     best_f1_b,  best_f1_e  = best_max(cls_b, "f1"), best_max(cls_e, "f1")
-
     best_mae_b, best_mae_e = best_min(reg_b, "mae"), best_min(reg_e, "mae")
     best_rmse_b, best_rmse_e = best_min(reg_b, "rmse"), best_min(reg_e, "rmse")
     best_spear_b, best_spear_e = best_max(reg_b, "spearman"), best_max(reg_e, "spearman")
 
-    # uplifts (Direction: ext - base; Return: base - ext so that positive = improvement)
+    # Uplifts (Direction: ext - base; Return: base - ext)
     d_auc = (best_auc_e - best_auc_b) if not (np.isnan(best_auc_b) or np.isnan(best_auc_e)) else np.nan
     d_acc = (best_acc_e - best_acc_b) if not (np.isnan(best_acc_b) or np.isnan(best_acc_e)) else np.nan
     d_f1  = (best_f1_e  - best_f1_b ) if not (np.isnan(best_f1_b ) or np.isnan(best_f1_e )) else np.nan
-
     d_mae = (best_mae_b - best_mae_e) if not (np.isnan(best_mae_b) or np.isnan(best_mae_e)) else np.nan
     d_rmse= (best_rmse_b - best_rmse_e) if not (np.isnan(best_rmse_b) or np.isnan(best_rmse_e)) else np.nan
     d_spear=(best_spear_e - best_spear_b) if not (np.isnan(best_spear_b) or np.isnan(best_spear_e)) else np.nan
 
-    # Top KPI cards
+    # KPI cards
     c1, c2 = st.columns(2)
     with c1:
         st.metric("Δ AUC (ext − base)", value=("+" if not np.isnan(d_auc) and d_auc>=0 else "") + (f"{d_auc:.3f}" if not np.isnan(d_auc) else "—"))
@@ -379,7 +375,7 @@ def keyword_explorer_tab(models: pd.DataFrame, asset: str, freq: str):
         styled_dir = (df_dir.style
                       .format({"Market only": "{:.3f}", "Market + Keywords": "{:.3f}", "Δ": "{:+.3f}"})
                       .applymap(_uplift_color, subset=["Δ"]))
-        st.dataframe(styled_dir, use_container_width=True)
+        st.dataframe(styled_dir, use_container_width=True, hide_index=True)
     else:
         st.caption("No direction metrics available.")
 
@@ -389,30 +385,28 @@ def keyword_explorer_tab(models: pd.DataFrame, asset: str, freq: str):
         styled_ret = (df_ret.style
                       .format({"Market only": "{:.3f}", "Market + Keywords": "{:.3f}", "Δ": "{:+.3f}"})
                       .applymap(_uplift_color, subset=["Δ"]))
-        st.dataframe(styled_ret, use_container_width=True)
+        st.dataframe(styled_ret, use_container_width=True, hide_index=True)
     else:
         st.caption("No return metrics available.")
 
     # Heatmap (collapsible)
-    st.markdown("")
     with st.expander("Show heatmap of uplifts", expanded=False):
-        metrics = []
-        uplifts = []
-        for row in dir_rows + ret_rows:
-            metrics.append(row["Metric"])
-            uplifts.append(row["Δ"] if not np.isnan(row["Δ"]) else 0.0)
+        metrics = [r["Metric"] for r in dir_rows + ret_rows]
+        uplifts = [float(r["Δ"]) if not np.isnan(r["Δ"]) else 0.0 for r in dir_rows + ret_rows]
 
-        if uplifts:
+        if metrics:
             import plotly.graph_objects as go
+            import numpy as np
+            z = np.array(uplifts, dtype=float).reshape(len(metrics), 1)  # rows = metrics, one column
             fig = go.Figure(data=go.Heatmap(
-                z=[uplifts],
-                x=["Δ"],
+                z=z,
+                x=["Δ"],  # single column
                 y=metrics,
                 colorbar=dict(title="Uplift"),
                 colorscale="RdBu",
                 zmid=0.0
             ))
-            fig.update_layout(height=300 + 20*len(metrics), margin=dict(l=0, r=10, t=10, b=0))
+            fig.update_layout(height=max(280, 24 * len(metrics) + 180), margin=dict(l=0, r=10, t=10, b=0))
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.caption("No data for heatmap.")
@@ -544,17 +538,12 @@ def advanced_mode(models: pd.DataFrame, strategies: pd.DataFrame, signals: Dict[
     label_to_code = {"Market only": "base", "Market + Keywords": "ext"}
     code_to_label = {v: k for k, v in label_to_code.items()}
     init_label = code_to_label.get(dataset_def, "Market + Keywords")
-
-    colA, colB, colC = st.columns([1.2, 0.9, 1.3])
+    colA, colB = st.columns([1.2, 0.9])
     with colA:
         asset = st.selectbox("Asset", assets, index=(assets.index(asset_def) if asset_def in assets else 0))
     with colB:
         freq = st.radio("Frequency", ["D", "W"], horizontal=True,
                         index=(["D", "W"].index(freq_def) if freq_def in ["D", "W"] else 1))
-    with colC:
-        ds_label = st.radio("Dataset", ["Market only", "Market + Keywords"], horizontal=True,
-                            index=(["Market only", "Market + Keywords"].index(init_label)))
-        dataset_code = label_to_code[ds_label]
 
     tabs = st.tabs(["Model Comparison", "Keyword Explorer", "Strategy Insights", "Context"])
     with tabs[0]:
