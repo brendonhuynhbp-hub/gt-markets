@@ -5,7 +5,6 @@ import json
 from pathlib import Path
 from typing import Dict, Any, List
 
-import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -396,7 +395,6 @@ def keyword_explorer_tab(models: pd.DataFrame, asset: str, freq: str):
 
         if metrics:
             import plotly.graph_objects as go
-            import numpy as np
             z = np.array(uplifts, dtype=float).reshape(len(metrics), 1)  # rows = metrics, single column
             fig = go.Figure(data=go.Heatmap(
                 z=z,
