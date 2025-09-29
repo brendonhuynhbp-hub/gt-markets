@@ -506,6 +506,7 @@ def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, datas
         .format({"Sharpe": fmt_dec, "Max DD": fmt_dec, "Annual Return": fmt_dec})
         .apply(lambda s: ["color:#e74c3c" if (pd.notna(v) and v < 0) else "" for v in s] if s.name=="Max DD" else [""]*len(s))
         .bar(subset=["Model","Setup","Confidence Policy","Sharpe","Max DD","Annual Return"], cmap="Greens")
+    )
     except Exception:
         pass
     st.dataframe(styled, use_container_width=True, hide_index=True)
