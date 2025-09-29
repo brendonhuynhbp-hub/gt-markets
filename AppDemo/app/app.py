@@ -4,6 +4,23 @@ import json
 import ast
 import numpy as np
 
+def _model_short_dirret(name) -> str:
+    import pandas as pd, math, re as _re
+    try:
+        if name is None or (isinstance(name, float) and math.isnan(name)) or (hasattr(pd,"isna") and pd.isna(name)):
+            n = ""
+        else:
+            n = str(name)
+    except Exception:
+        n = ""
+    n = n.strip()
+    if not n: return "-"
+    m = _re.match(r'([A-Za-z0-9]+)[_\- ]?(cls|reg)?', n)
+    base = m.group(1).upper() if m else n.upper()
+    kind = (m.group(2) or "").lower() if m else ""
+    tgt = "Direction" if kind=="cls" else ("Return" if kind=="reg" else "")
+    return f"{base} ({tgt})" if tgt else base
+
 # ======================= Helpers for Strategy Insights =======================
 def _params_to_dict(v):
     """Parse a params cell that may be a dict, JSON string, or Python-literal string."""
@@ -568,21 +585,32 @@ def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, datas
         ),
         axis=1,
     )
-    df["Model"] = df["Model"].apply(_model_friendly)
+        df["Model"] = df["Model"].apply(_model_short_dirret)
     df["Confidence Policy"] = df.apply(lambda r: thresholds_to_policy(str(r.get("Rule","")), r.get("params")), axis=1)
 
     # Controls (models inferred from strategies only, so the list always matches available data)
-    df["Model"] = df["Model"].apply(_model_friendly)
+        df["Model"] = df["Model"].apply(_model_short_dirret)
     options = sorted(df["Model"].dropna().unique().tolist())
     c1,c2 = st.columns([1.3,1.3])
-    with c1:
-        sel_mod = st.multiselect("Model", options, default=options)
-    with c2:
-        sort_by = st.selectbox("Sort by", ["Sharpe","Annual Return","Max DD"], index=0)
-    q = st.text_input("Search (Setup / Model / Policy)", "")
+with c1:
+    model_options = sorted(df["Model"].dropna().unique().tolist())
+    all_option = "All"
+    model_choices = [all_option] + model_options
+    sel_mod = st.multiselect("Model", model_choices, default=[all_option])
+with c2:
+    st.write("")  # placeholder (removed Sort by)
+
+# Expand "All" into concrete models
+if (not sel_mod) or (all_option in sel_mod):
+    active_models = set(model_options)
+else:
+    active_models = set([m for m in sel_mod if m != all_option])
+
+q = st.text_input("Search (Setup / Model / Policy)", "")
+
 
     # Filter
-    f = df[df["Model"].isin(sel_mod)].copy()
+        f = df[df["Model"].isin(list(active_models))].copy()
     if q.strip():
         qre = re.compile(re.escape(q), re.I)
         mask = (
@@ -598,8 +626,7 @@ def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, datas
         f.drop_duplicates(subset=["Model","Setup","Confidence Policy","Sharpe","Max DD","Annual Return"])
          .reset_index(drop=True)
     )
-    asc = (sort_by == "Max DD")
-    f = f.sort_values(by=[sort_by], ascending=asc)
+        f = f.sort_values(by=["Sharpe"], ascending=False)
 
     st.caption(f"Showing **{len(f):,}** strategies across **{f['Model'].nunique()}** model(s).")
 
