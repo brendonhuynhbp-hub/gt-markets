@@ -1,6 +1,7 @@
 # AppDemo/app/app.py
 from __future__ import annotations
 import re
+import ast
 
 import json
 from pathlib import Path
@@ -355,48 +356,29 @@ def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, datas
     st.subheader("Strategy Insights")
 
     df = strategies.copy()
-    for col in ["asset","freq","dataset","params","family","sharpe","max_dd","ann_return"]:
+    # Defensive: ensure required columns exist
+    for col in ["asset","freq","dataset","family","sharpe","max_dd","ann_return"]:
         if col not in df.columns:
             st.warning(f"Missing column '{col}' in strategies data.")
             return
 
     df = df[(df["asset"] == asset) & (df["freq"] == freq) & (df["dataset"] == dataset)].copy()
 
-    # Robust label parsing
-    def safe_parse_label_cell(val, part: str) -> str:
-        try:
-            if isinstance(val, str):
-                return parse_label(val, part)
-            if isinstance(val, dict):
-                if part == "model":
-                    return str(val.get("model", ""))
-                else:
-                    return str(val.get("rule", val.get("ta", "")))
-            return ""
-        except Exception:
-            return ""
-
-    if "model_label" not in df.columns:
-        df["model_label"] = df["params"].apply(lambda v: safe_parse_label_cell(v, "model"))
-    if "rule_label" not in df.columns:
-        df["rule_label"]  = df["params"].apply(lambda v: safe_parse_label_cell(v, "rule"))
-
+    # Robust labels
+    df = derive_labels(df)
     df.rename(columns={"family":"Family","model_label":"Model","rule_label":"Rule",
                        "sharpe":"Sharpe","max_dd":"Max DD","ann_return":"Annual Return"}, inplace=True)
 
-    # Controls
+    # Controls (no Top-N)
     families = sorted(df["Family"].dropna().unique().tolist())
     models   = sorted(df["Model"].dropna().unique().tolist())
-
-    c1,c2,c3,c4 = st.columns([1.2,1.2,1.2,1])
+    c1,c2,c3 = st.columns([1.2,1.2,1.2])
     with c1:
         sel_fam = st.multiselect("Family", families, default=families)
     with c2:
         sel_mod = st.multiselect("Model", models, default=models)
     with c3:
         sort_by = st.selectbox("Sort by", ["Sharpe","Annual Return","Max DD"], index=0)
-    with c4:
-        topn = st.number_input("Top-N / family", 1, 20, 5, 1)
 
     q = st.text_input("Search in Rule (regex ok)", "")
 
@@ -408,19 +390,15 @@ def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, datas
         except re.error:
             st.warning("Invalid regex in search; showing all.")
 
-    # De-dupe & Top-N
+    # De-dupe identical rows, then sort
     f = (f.drop_duplicates(subset=["Family","Model","Rule","Sharpe","Max DD","Annual Return"])
            .reset_index(drop=True))
-
     asc = (sort_by == "Max DD")  # more negative is worse, so ascending
-    f = (f.sort_values(by=[sort_by], ascending=asc)
-           .groupby("Family", group_keys=False)
-           .head(int(topn)))
+    f = f.sort_values(by=[sort_by], ascending=asc)
 
-    # Summary
     st.caption(f"Showing **{len(f):,}** strategies across **{f['Family'].nunique()}** family(ies).")
 
-    # Prepare display
+    # Display
     show = f[["Family","Model","Rule","Sharpe","Max DD","Annual Return"]].copy()
     for col in ["Sharpe","Max DD","Annual Return"]:
         show[col] = pd.to_numeric(show[col], errors="coerce")
@@ -428,7 +406,6 @@ def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, datas
     def fmt_dec(x):
         return f"{x:.2f}" if pd.notna(x) else "-"
 
-    # --- Styling without hard dependency on matplotlib ---
     has_mpl = True
     try:
         import matplotlib  # noqa: F401
@@ -440,17 +417,14 @@ def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, datas
         .apply(lambda s: ["color:#e74c3c" if (pd.notna(v) and v < 0) else "" for v in s] if s.name=="Max DD" else [""]*len(s))
         .bar(subset=["Sharpe"], align="zero")
     )
-
     if has_mpl:
-        # Pretty gradient if matplotlib is available
         styled = styled.background_gradient(subset=["Annual Return"], cmap="Greens")
     else:
-        # Fallback: simple text color for Annual Return (green=pos, red=neg)
         styled = styled.apply(lambda s: ["color:#2ecc71" if (pd.notna(v) and v >= 0) else ("color:#e74c3c" if pd.notna(v) else "") for v in s] if s.name=="Annual Return" else [""]*len(s))
 
     st.dataframe(styled, use_container_width=True, hide_index=True)
 
-    # Download button
+    # Download
     csv = show.to_csv(index=False).encode("utf-8")
     st.download_button("Download filtered CSV", csv, file_name=f"strategies_{asset}_{freq}_{dataset}.csv", mime="text/csv")
 
@@ -580,11 +554,52 @@ else:
     advanced_mode(model_metrics, strategy_metrics, signals_map)
 
 
-def parse_label(params: str, part: str) -> str:
-    if not isinstance(params, str):
-        return ""
-    if part == "model":
-        m = re.search(r"(model|mdl)\s*=\s*([^;|]+)", params, re.I)
-    else:
-        m = re.search(r"(rule|ta)\s*=\s*(.+)", params, re.I)
-    return m.group(2).strip() if m else params
+def derive_labels(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Populate model_label / rule_label robustly from existing columns.
+    - If labels exist but are blank/NaN, recompute them.
+    - params may be dict, JSON string, or repr; try to parse.
+    - Prefer ta_label for Rule if available; else 'rule' or 'ta_label' inside params.
+    """
+    import pandas as pd
+    def _to_dict(v):
+        if isinstance(v, dict):
+            return v
+        if isinstance(v, str):
+            for loader in (json.loads, ast.literal_eval):
+                try:
+                    d = loader(v)
+                    if isinstance(d, dict):
+                        return d
+                except Exception:
+                    pass
+        return {}
+
+    # Ensure columns exist
+    if "model_label" not in df.columns:
+        df["model_label"] = pd.NA
+    if "rule_label" not in df.columns:
+        df["rule_label"] = pd.NA
+
+    need_model = df["model_label"].fillna("").eq("").any()
+    need_rule  = df["rule_label"].fillna("").eq("").any()
+
+    if need_model or need_rule:
+        p = df["params"] if "params" in df.columns else pd.Series([""]*len(df), index=df.index)
+        parsed = p.apply(_to_dict)
+        if need_model:
+            fill_model = parsed.apply(lambda d: str(d.get("model","")) if isinstance(d, dict) else "")
+            df.loc[df["model_label"].fillna("").eq(""), "model_label"] = fill_model
+        if need_rule:
+            # Prefer ta_label column if present & non-empty
+            if "ta_label" in df.columns:
+                ta_col = df["ta_label"].astype(str)
+                df.loc[df["rule_label"].fillna("").eq("") & ta_col.ne(""), "rule_label"] = ta_col
+            # Fallback to params dict keys
+            fallback = parsed.apply(lambda d: str(d.get("rule", d.get("ta_label",""))) if isinstance(d, dict) else "")
+            df.loc[df["rule_label"].fillna("").eq(""), "rule_label"] = fallback
+
+    # Final cleanup: replace still-empty with "-"
+    for c in ["model_label","rule_label"]:
+        df[c] = df[c].replace("", pd.NA)
+    return df
