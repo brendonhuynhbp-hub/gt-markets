@@ -703,61 +703,120 @@ def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, datas
 
 
 def context_tab(signals_map: dict, asset: str, freq: str, dataset: str, strategies: pd.DataFrame = None):
-    import pandas as pd
-    import streamlit as st
+    import pandas as pd, streamlit as st, re, math, numpy as np
 
-    st.subheader("Context")
+    def _fmt(x, pct=False):
+        try:
+            x = float(x)
+            return (f"{x:.2f}" if not pct else f"{x*100:.1f}%")
+        except Exception:
+            return "-"
 
-    # 1) Signal snapshot from signals_map
+    # ---------- SIGNAL SNAPSHOT (robust key matching) ----------
     snap = None
-    for k in (f"{asset}-{freq}", f"{asset}_{freq}", asset):
+    keys = list((signals_map or {}).keys())
+    # try exacts first
+    for k in [f"{asset}-{freq}", f"{asset}_{freq}", asset]:
         if isinstance(signals_map, dict) and k in signals_map:
             snap = signals_map[k]; break
+    # then fuzzy: any key that contains asset and freq
+    if snap is None and isinstance(signals_map, dict):
+        aset = asset.lower(); fr = freq.lower()
+        for k in keys:
+            lk = str(k).lower()
+            if aset in lk and fr[0] in lk:  # e.g. 'w' in 'weekly'
+                snap = signals_map[k]; break
 
-    signal_txt, conf_val, ts_txt = "-", None, "-"
+    sig_txt, conf, ts = "-", None, "-"
     if isinstance(snap, dict):
-        signal_txt = str(snap.get("signal") or snap.get("action") or "-").upper()
-        conf_val = snap.get("confidence") or snap.get("score") or None
-        ts_txt = str(snap.get("timestamp") or snap.get("time") or "-")
+        sig_txt = str(snap.get("signal") or snap.get("action") or "-").upper()
+        conf    = snap.get("confidence") or snap.get("score")
+        ts      = str(snap.get("timestamp") or snap.get("time") or "-")
 
+    st.subheader("Context")
     c1,c2,c3 = st.columns(3)
-    with c1: st.metric("Signal", signal_txt)
-    with c2: st.metric("Confidence", f"{conf_val:.0f}%" if isinstance(conf_val,(int,float)) else "-")
-    with c3: st.metric("As of", ts_txt)
+    with c1: st.metric("Signal", sig_txt)
+    with c2: st.metric("Confidence", f"{conf:.0f}%" if isinstance(conf,(int,float)) else "-")
+    with c3: st.metric("As of", ts)
 
-    # 2) Derive explanation from strategies (best Sharpe row)
+    # ---------- STRATEGY ROW (progressive fallback) ----------
     expl_label, expl_why = None, None
     sh, dd, ar = None, None, None
+
+    def _parse_params(s):
+        import json, ast
+        if isinstance(s, dict): return s
+        if not isinstance(s, str): return {}
+        for loader in (json.loads, ast.literal_eval):
+            try: d = loader(s); return d if isinstance(d, dict) else {}
+            except Exception: pass
+        return {}
+
+    def _explain(rule, p):
+        t = (rule or "").upper()
+        if "MACD" in t or "MACD" in str(p).upper():
+            w = str(p.get("window") or p.get("macd") or "12-26-9").replace(" ","").replace("_","-").split("-")
+            label = f"MACD cross ({w[0]}/{w[1]}, {w[2]})" if len(w)>=3 else "MACD cross (12/26, 9)"
+            why = "Momentum turning; cross above signal bullish, below bearish."
+            return label, why
+        if "RSI" in t or "RSI" in str(p).upper():
+            per = str(p.get("period") or p.get("window") or "14")
+            th = (" > "+str(p["hi"])) if p.get("hi") else ( " < "+str(p["lo"]) if p.get("lo") else "")
+            return f"RSI({per}){th}", "Momentum oscillator; >70 overbought, <30 oversold."
+        # MA cross
+        fast = str(p.get("lo") or p.get("fast") or "10"); slow = str(p.get("hi") or p.get("slow") or "50")
+        return f"MA cross ({fast}/{slow})", "Short-term vs long-term trend crossover."
+
     if isinstance(strategies, pd.DataFrame) and not strategies.empty:
         df = strategies.copy()
-        for col, val in [("asset", asset), ("freq", freq), ("dataset", dataset)]:
-            if col in df.columns:
-                df = df[df[col] == val]
-        if "sharpe" in df.columns and not df.empty:
-            df = df.sort_values(by="sharpe", ascending=False)
-            row = df.iloc[0].to_dict()
-            params = _parse_params_to_dict(row.get("params"))
-            expl_label, expl_why = _explain_setup(str(row.get("rule") or row.get("Rule") or ""), params)
-            sh, dd, ar = row.get("sharpe"), row.get("max_dd"), row.get("ann_return")
 
-    # Fallback demo
+        # normalize names
+        for c in ["asset","freq","dataset","rule","Rule","params"]:
+            if c not in df.columns: df[c] = np.nan
+
+        # progressive filters: (asset+freq+dataset) -> (asset+freq) -> (asset) -> (any)
+        def pick(d):
+            if d.empty: return None
+            if "sharpe" in d.columns:
+                d = d.sort_values("sharpe", ascending=False)
+            return d.iloc[0].to_dict()
+
+        cand = None
+        for subset in [
+            df[(df["asset"]==asset) & (df["freq"]==freq) & (df["dataset"]==dataset)],
+            df[(df["asset"]==asset) & (df["freq"]==freq)],
+            df[(df["asset"]==asset)],
+            df
+        ]:
+            cand = pick(subset)
+            if cand: break
+
+        if cand:
+            p = _parse_params(cand.get("params"))
+            expl_label, expl_why = _explain(cand.get("rule") or cand.get("Rule"), p)
+            sh, dd, ar = cand.get("sharpe"), cand.get("max_dd"), cand.get("ann_return")
+
+    # fallback text if still nothing
     if expl_label is None:
-        if signal_txt == "BUY":
-            expl_label, expl_why = "MA cross (10/50)", "Short-term momentum crossed above long-term; trend continuation likely."
-        elif signal_txt == "SELL":
-            expl_label, expl_why = "RSI(14) > 70", "Overbought conditions; risk of pullback."
-        else:
-            expl_label, expl_why = "MACD cross (12/26, 9)", "Momentum turning; watch for confirmation."
+        expl_label = "MACD cross (12/26, 9)" if sig_txt == "-" else ("MA cross (10/50)" if sig_txt=="BUY" else "RSI(14) > 70")
 
     st.markdown(f"**Setup:** {expl_label}")
-    st.caption(expl_why)
+    st.caption(expl_why or "Derived from the best historical strategy for this market and timeframe.")
+    k1,k2,k3 = st.columns(3)
+    with k1: st.metric("Sharpe", _fmt(sh))
+    with k2: st.metric("Max Drawdown", _fmt(dd))
+    with k3: st.metric("Annual Return", _fmt(ar, pct=True))
 
-    s, d, r = _format_perf(sh, dd, ar)
-    st.write("**Backtest context**")
-    c1,c2,c3 = st.columns(3)
-    with c1: st.metric("Sharpe", s)
-    with c2: st.metric("Max Drawdown", d)
-    with c3: st.metric("Annual Return", r)
+    # Debug footer (helpful while wiring data)
+    with st.expander("Debug (data wiring)"):
+        st.write("Signal keys:", list((signals_map or {}).keys())[:20])
+        if isinstance(strategies, pd.DataFrame):
+            st.write("Rows by filters:",
+                     {"asset+freq+dataset": int(((strategies.get("asset")==asset) & (strategies.get("freq")==freq) & (strategies.get("dataset")==dataset)).sum() if "asset" in strategies else 0),
+                      "asset+freq": int(((strategies.get("asset")==asset) & (strategies.get("freq")==freq)).sum() if "asset" in strategies else 0),
+                      "asset": int((strategies.get("asset")==asset).sum() if "asset" in strategies else 0),
+                      "total": len(strategies)})
+
 
 
 
