@@ -6,12 +6,23 @@ import numpy as np
 
 # ======================= Helpers for Strategy Insights =======================
 
-def _model_friendly(name: str) -> str:
-    """Return a concise model label with target type."""
-    n = (name or "").strip()
-    base = n
+def _model_friendly(name) -> str:
+    """Return a concise model label with target type. Robust to None/NaN/<NA>."""
+    import pandas as pd, math, re as _re
+    # Normalize to string safely
+    try:
+        if name is None or (isinstance(name, float) and math.isnan(name)) or (hasattr(pd, "isna") and pd.isna(name)):
+            n = ""
+        else:
+            n = str(name)
+    except Exception:
+        n = ""
+    n = n.strip()
+
+    base = n if n else ""
     target = ""
-    m = re.match(r'([A-Za-z0-9]+)[_\- ]?(cls|reg)?', n)
+
+    m = _re.match(r'([A-Za-z0-9]+)[_\- ]?(cls|reg)?', n or "")
     if m:
         base = m.group(1).upper()
         kind = (m.group(2) or "").lower()
@@ -19,22 +30,10 @@ def _model_friendly(name: str) -> str:
             target = "Direction"
         elif kind == "reg":
             target = "Return"
-    # common expansions
+
     aliases = {"XGB": "XGBoost", "RF": "Random Forest", "MLP": "MLP", "LSTM": "LSTM", "LR": "Logistic"}
-    pretty = aliases.get(base, base)
-    return f"{pretty} ({target})" if target else pretty
-def _params_to_dict(v):
-    if isinstance(v, dict):
-        return v
-    if isinstance(v, str):
-        for loader in (json.loads, ast.literal_eval):
-            try:
-                d = loader(v)
-                if isinstance(d, dict):
-                    return d
-            except Exception:
-                pass
-    return {}
+    pretty = aliases.get(base, base) if base else ""
+    return f"{pretty} ({target})" if (pretty and target) else (pretty or "-")
 
 def derive_labels(df: pd.DataFrame) -> pd.DataFrame:
     import pandas as pd
