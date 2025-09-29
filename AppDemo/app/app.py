@@ -632,61 +632,110 @@ def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, datas
 
 def context_tab(signals_map: dict, asset: str, freq: str, dataset: str, strategies: pd.DataFrame = None):
     import streamlit as st
-    import pandas as pd
+    import numpy as np
 
     st.subheader("Context")
 
-    # ---------- 1) Try to fetch from signals_map ----------
+    # ---------- find the latest snapshot for this asset/freq ----------
     snap = None
-    for k in [f"{asset}-{freq}", f"{asset}_{freq}", asset]:
-        if isinstance(signals_map, dict) and k in signals_map:
-            snap = signals_map[k]
-            break
+    if isinstance(signals_map, dict):
+        for k in (f"{asset}-{freq}", f"{asset}_{freq}", asset):
+            if k in signals_map:
+                snap = signals_map[k]
+                break
 
-    sig_txt, conf_val, ts_txt = "-", None, "-"
-    if isinstance(snap, dict):
-        sig_txt = str(snap.get("signal") or snap.get("action") or "-").upper()
-        conf_val = snap.get("confidence") or snap.get("score")
-        ts_txt = str(snap.get("timestamp") or snap.get("time") or "-")
+    # ---------- HARD-CODED DEMO if snapshot is missing ----------
+    if not isinstance(snap, dict) or not snap:
+        snap = {
+            "signal": "BUY",
+            "confidence": 72,             # 0..100
+            "timestamp": "Demo snapshot",
+            # current context (not backtest)
+            "chg_d": 0.012,               # +1.2% today
+            "chg_w": 0.035,               # +3.5% last 7d (or 1w)
+            "rsi": 56,                    # RSI(14)
+            "macd_hist": 0.004,           # MACD hist > 0 => bullish momentum
+            "vol_pctile": 0.55,           # realized vol percentile (0..1)
+            "ma_fast": 10, "ma_slow": 50, # for description only
+            "trend_state": "Uptrend",     # optional override
+            "top_keywords": ["ETF inflow", "halving", "institutional"],
+        }
 
-    # ---------- 2) Try to fetch from strategies ----------
-    expl_label, expl_why, sh, dd, ar = None, None, None, None, None
-    if isinstance(strategies, pd.DataFrame) and not strategies.empty:
-        df = strategies.copy()
-        for col, val in [("asset", asset), ("freq", freq), ("dataset", dataset)]:
-            if col in df.columns:
-                df = df[df[col] == val]
-        if not df.empty and "sharpe" in df.columns:
-            row = df.sort_values(by="sharpe", ascending=False).iloc[0].to_dict()
-            expl_label, expl_why = "Derived setup", "Based on best Sharpe strategy."
-            sh, dd, ar = row.get("sharpe"), row.get("max_dd"), row.get("ann_return")
+    # ---------- helpers ----------
+    def fmt_pct(x):
+        try: return f"{100*float(x):.1f}%"
+        except: return "-"
 
-    # ---------- 3) Hardcoded fallback if still empty ----------
-    if sig_txt == "-" and expl_label is None:
-        sig_txt, conf_val, ts_txt = "BUY", 72, "Demo snapshot"
-        expl_label, expl_why = "MA cross (10/50)", "Short-term momentum crossed above long-term; trend continuation likely."
-        sh, dd, ar = 1.25, -8.0, 0.125
+    def bucket_vol(p):
+        try:
+            p = float(p)
+            if p < 0.33:  return "Low"
+            if p < 0.66:  return "Moderate"
+            return "High"
+        except: return "-"
 
-    # ---------- 4) Render ----------
+    def bucket_rsi(v):
+        try:
+            v = float(v)
+            if v >= 70: return f"{int(v)} (Overbought)"
+            if v <= 30: return f"{int(v)} (Oversold)"
+            return f"{int(v)} (Neutral)"
+        except: return "-"
+
+    def macd_state(h):
+        try:
+            h = float(h)
+            if h > 0:  return "Above zero (bullish)"
+            if h < 0:  return "Below zero (bearish)"
+            return "Flat"
+        except: return "-"
+
+    def trend_label(s):
+        if isinstance(s, str) and s:
+            return s
+        # fallback: infer from signal if we have nothing better
+        sig = str(snap.get("signal") or "").upper()
+        if sig == "BUY":  return "Uptrend"
+        if sig == "SELL": return "Downtrend"
+        return "Sideways"
+
+    # ---------- top bar: signal snapshot ----------
+    signal_txt = str(snap.get("signal") or "-").upper()
+    conf_val   = snap.get("confidence")
+    ts_txt     = str(snap.get("timestamp") or snap.get("time") or "-")
+
     c1,c2,c3 = st.columns(3)
-    with c1: st.metric("Signal", sig_txt)
+    with c1: st.metric("Signal", signal_txt)
     with c2: st.metric("Confidence", f"{conf_val:.0f}%" if isinstance(conf_val,(int,float)) else "-")
     with c3: st.metric("As of", ts_txt)
 
-    st.markdown(f"**Setup:** {expl_label or '-'}")
-    st.caption(expl_why or "-")
+    # ---------- today’s context tiles ----------
+    dchg      = snap.get("chg_d")
+    wchg      = snap.get("chg_w")
+    rsi       = snap.get("rsi")
+    macd_hist = snap.get("macd_hist")
+    vol_pctl  = snap.get("vol_pctile")
+    tstate    = trend_label(snap.get("trend_state"))
 
-    def _f2(x):
-        try: return f"{float(x):.2f}"
-        except: return "-"
-    def _pct(x):
-        try: return f"{float(x)*100:.1f}%"
-        except: return "-"
+    c1,c2,c3,c4,c5,c6 = st.columns(6)
+    with c1: st.metric("Today",  fmt_pct(dchg))
+    with c2: st.metric("1W",     fmt_pct(wchg))
+    with c3: st.metric("Trend",  tstate)
+    with c4: st.metric("RSI(14)", bucket_rsi(rsi))
+    with c5: st.metric("MACD",   macd_state(macd_hist))
+    with c6: st.metric("Volatility", bucket_vol(vol_pctl))
 
-    k1,k2,k3 = st.columns(3)
-    with k1: st.metric("Sharpe", _f2(sh))
-    with k2: st.metric("Max DD", _f2(dd))
-    with k3: st.metric("Annual Return", _pct(ar))
+    # ---------- keywords / notes ----------
+    kws = snap.get("top_keywords") or snap.get("keywords") or []
+    if isinstance(kws, (list, tuple)) and kws:
+        st.caption("Notable keywords: " + ", ".join(map(str, kws)))
+
+    # ---------- short narrative ----------
+    parts = []
+    if isinstance(dchg,(int,float)): parts.append(f"{fmt_pct(dchg)} today")
+    if isinstance(wchg,(int,float)): parts.append(f"{fmt_pct(wchg)} this week")
+    if parts:
+        st.write(f"**Summary:** {asset} {', '.join(parts)}; trend **{tstate}**, momentum **RSI {bucket_rsi(rsi)}**, volatility **{bucket_vol(vol_pctl)}**.")
 
 
 # ------------------------------------------------------------
