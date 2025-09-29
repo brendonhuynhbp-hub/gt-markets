@@ -460,56 +460,90 @@ def keyword_explorer_tab(models: pd.DataFrame, asset: str, freq: str):
 
 def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, dataset: str):
     st.subheader("Strategy Insights")
+
     df = strategies.copy()
     for col in ["asset","freq","dataset","family","sharpe","max_dd","ann_return"]:
         if col not in df.columns:
             st.warning(f"Missing column '{col}' in strategies data.")
             return
+
     df = df[(df["asset"] == asset) & (df["freq"] == freq) & (df["dataset"] == dataset)].copy()
+
     df = derive_labels(df)
     df.rename(columns={"family":"Family","model_label":"Model","rule_label":"Rule",
                        "sharpe":"Sharpe","max_dd":"Max DD","ann_return":"Annual Return"}, inplace=True)
+
     if "params" not in df.columns:
         df["params"] = None
+
+    # Indicator + Window and policy
     parts = df.apply(lambda r: split_rule_columns(str(r.get("Rule", ""))), axis=1)
     df["Indicator"], df["Window"] = zip(*parts)
-    df["Setup"] = df.apply(lambda r: (r["Indicator"].replace("Moving Average Crossover","MA cross") + (" (" + r["Window"].replace("-", "/") + ")" if str(r["Window"]) not in ["", "nan"] else "")), axis=1)
+    df["Setup"] = df.apply(
+        lambda r: (
+            r["Indicator"].replace("Moving Average Crossover","MA cross")
+            + (f" ({str(r['Window']).replace('-', '/')})" if pd.notna(r["Window"]) and str(r["Window"]).strip() not in ["", "nan"] else "")
+        ),
+        axis=1,
+    )
     df["Model"] = df["Model"].apply(_model_friendly)
     df["Confidence Policy"] = df.apply(lambda r: thresholds_to_policy(str(r.get("Rule","")), r.get("params")), axis=1)
-    families = sorted(df["Family"].dropna().unique().tolist())
+
+    # Controls
     models   = sorted(df["Model"].dropna().unique().tolist())
-    c1,c2,c3 = st.columns([1.2,1.2,1.2])
+    c1,c2 = st.columns([1.3,1.3])
     with c1:
-        sel_fam = st.multiselect("Family", families, default=families)
-    with c2:
         sel_mod = st.multiselect("Model", models, default=models)
-    with c3:
+    with c2:
         sort_by = st.selectbox("Sort by", ["Sharpe","Annual Return","Max DD"], index=0)
-    q = st.text_input("Search (Indicator / Window / Policy)", "")
-    f = df[df["Family"].isin(sel_fam) & df["Model"].isin(sel_mod)].copy()
+
+    q = st.text_input("Search (Setup / Model / Policy)", "")
+
+    # Filter
+    f = df[df["Model"].isin(sel_mod)].copy()
     if q.strip():
         qre = re.compile(re.escape(q), re.I)
         mask = (
-            f["Setup"].fillna("").str.contains(qre) | f["Model"].fillna("").str.contains(qre) | f["Confidence Policy"].fillna("").str.contains(qre) | f["Rule"].fillna("").str.contains(qre)
+            f["Setup"].fillna("").str.contains(qre) |
+            f["Model"].fillna("").str.contains(qre) |
+            f["Confidence Policy"].fillna("").str.contains(qre) |
+            f["Rule"].fillna("").str.contains(qre)
         )
         f = f[mask]
-    f = (f.drop_duplicates(subset=["Model","Setup","Confidence Policy","Sharpe","Max DD","Annual Return"])
-           .reset_index(drop=True))
+
+    # Dedupe + sort
+    f = (
+        f.drop_duplicates(subset=["Model","Setup","Confidence Policy","Sharpe","Max DD","Annual Return"])
+         .reset_index(drop=True)
+    )
     asc = (sort_by == "Max DD")
     f = f.sort_values(by=[sort_by], ascending=asc)
-    st.caption(f"Showing **{len(f):,}** strategies across **{f['Family'].nunique()}** family(ies).")
+
+    st.caption(f"Showing **{len(f):,}** strategies across **{f['Model'].nunique()}** model(s).")
+
+    # Display
     show = f[["Model","Setup","Confidence Policy","Sharpe","Max DD","Annual Return"]].copy()
     for col in ["Sharpe","Max DD","Annual Return"]:
         show[col] = pd.to_numeric(show[col], errors="coerce")
-    def fmt_dec(x): return f"{x:.2f}" if pd.notna(x) else "-"
-    styled = (show.style
-        .format({"Sharpe": fmt_dec, "Max DD": fmt_dec, "Annual Return": fmt_dec})
-        .apply(lambda s: ["color:#e74c3c" if (pd.notna(v) and v < 0) else "" for v in s] if s.name=="Max DD" else [""]*len(s))
-        .bar(subset=["Model","Setup","Confidence Policy","Sharpe","Max DD","Annual Return"], cmap="Greens")
+
+    def fmt_dec(x):
+        return f"{x:.2f}" if pd.notna(x) else "-"
+
+    styled = (
+        show.style
+            .format({"Sharpe": fmt_dec, "Max DD": fmt_dec, "Annual Return": fmt_dec})
+            .apply(lambda s: ["color:#e74c3c" if (pd.notna(v) and v < 0) else "" for v in s] if s.name=="Max DD" else [""]*len(s))
+            .bar(subset=["Sharpe"], align="zero")
     )
+    try:
+        import matplotlib  # optional for gradient
+        styled = styled.background_gradient(subset=["Annual Return"], cmap="Greens")
     except Exception:
         pass
+
     st.dataframe(styled, use_container_width=True, hide_index=True)
+
+    # Download
     csv = show.to_csv(index=False).encode("utf-8")
     st.download_button("Download filtered CSV", csv, file_name=f"strategies_{asset}_{freq}_{dataset}.csv", mime="text/csv")
 
