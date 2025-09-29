@@ -5,11 +5,62 @@ import ast
 import numpy as np
 
 # ======================= Helpers for Strategy Insights =======================
+def _params_to_dict(v):
+    """Parse a params cell that may be a dict, JSON string, or Python-literal string."""
+    if isinstance(v, dict):
+        return v
+    if isinstance(v, str):
+        for loader in (json.loads, ast.literal_eval):
+            try:
+                d = loader(v)
+                if isinstance(d, dict):
+                    return d
+            except Exception:
+                pass
+    return {}
+
+def derive_labels(df: pd.DataFrame) -> pd.DataFrame:
+    """Populate model_label / rule_label from params or existing columns."""
+    import pandas as pd
+    if "model_label" not in df.columns:
+        df["model_label"] = pd.NA
+    if "rule_label" not in df.columns:
+        df["rule_label"] = pd.NA
+
+    need_model = df["model_label"].fillna("").eq("").any()
+    need_rule  = df["rule_label"].fillna("").eq("").any()
+
+    if need_model or need_rule:
+        p = df["params"] if "params" in df.columns else pd.Series([""]*len(df), index=df.index)
+        parsed = p.apply(_params_to_dict)
+
+        if need_model:
+            df.loc[df["model_label"].fillna("").eq(""), "model_label"] = parsed.apply(
+                lambda d: str(d.get("model","")) if isinstance(d, dict) else ""
+            )
+
+        if need_rule:
+            # Prefer explicit ta_label column if present
+            if "ta_label" in df.columns:
+                ta_col = df["ta_label"].astype(str)
+                mask = df["rule_label"].fillna("").eq("") & ta_col.ne("")
+                df.loc[mask, "rule_label"] = ta_col
+
+            # Otherwise build from params keys
+            def build_rule(d: dict) -> str:
+                if not isinstance(d, dict):
+                    return ""
+                return str(d.get("ta_label") or d.get("ta") or d.get("rule") or "")
+            fallback = parsed.apply(build_rule)
+            df.loc[df["rule_label"].fillna("").eq(""), "rule_label"] = fallback
+
+    for c in ["model_label","rule_label"]:
+        df[c] = df[c].replace("", pd.NA)
+    return df
 
 def _model_friendly(name) -> str:
     """Return a concise model label with target type. Robust to None/NaN/<NA>."""
     import pandas as pd, math, re as _re
-    # Normalize to string safely
     try:
         if name is None or (isinstance(name, float) and math.isnan(name)) or (hasattr(pd, "isna") and pd.isna(name)):
             n = ""
@@ -18,10 +69,8 @@ def _model_friendly(name) -> str:
     except Exception:
         n = ""
     n = n.strip()
-
     base = n if n else ""
     target = ""
-
     m = _re.match(r'([A-Za-z0-9]+)[_\- ]?(cls|reg)?', n or "")
     if m:
         base = m.group(1).upper()
@@ -30,49 +79,19 @@ def _model_friendly(name) -> str:
             target = "Direction"
         elif kind == "reg":
             target = "Return"
-
     aliases = {"XGB": "XGBoost", "RF": "Random Forest", "MLP": "MLP", "LSTM": "LSTM", "LR": "Logistic"}
     pretty = aliases.get(base, base) if base else ""
     return f"{pretty} ({target})" if (pretty and target) else (pretty or "-")
 
-def derive_labels(df: pd.DataFrame) -> pd.DataFrame:
-    import pandas as pd
-    if "model_label" not in df.columns:
-        df["model_label"] = pd.NA
-    if "rule_label" not in df.columns:
-        df["rule_label"] = pd.NA
-    need_model = df["model_label"].fillna("").eq("").any()
-    need_rule  = df["rule_label"].fillna("").eq("").any()
-    if need_model or need_rule:
-        p = df["params"] if "params" in df.columns else pd.Series([""]*len(df), index=df.index)
-        parsed = p.apply(_params_to_dict)
-        if need_model:
-            fill_model = parsed.apply(lambda d: str(d.get("model","")) if isinstance(d, dict) else "")
-            df.loc[df["model_label"].fillna("").eq(""), "model_label"] = fill_model
-        if need_rule:
-            if "ta_label" in df.columns:
-                ta_col = df["ta_label"].astype(str)
-                mask = df["rule_label"].fillna("").eq("") & ta_col.ne("")
-                df.loc[mask, "rule_label"] = ta_col
-            def build_rule(d: dict) -> str:
-                if not isinstance(d, dict):
-                    return ""
-                base = str(d.get("ta_label") or d.get("ta") or d.get("rule") or "")
-                return base
-            fallback = parsed.apply(build_rule)
-            df.loc[df["rule_label"].fillna("").eq(""), "rule_label"] = fallback
-    for c in ["model_label","rule_label"]:
-        df[c] = df[c].replace("", pd.NA)
-    return df
-
 _INDICATOR_NAMES = {
-    "TA_MAcross": "Moving Average Crossover",
+    "TA_MAcross": "MA cross",
     "TA_MACD": "MACD",
     "TA_RSI": "RSI",
     "TA_BBands": "Bollinger Bands",
 }
 
 def split_rule_columns(rule_text: str) -> tuple[str, str]:
+    """Extract (Indicator, Window) from a rule string like 'TA_MAcross_10-50 ...'"""
     indicator = ""
     window = ""
     if isinstance(rule_text, str) and rule_text:
@@ -88,15 +107,22 @@ def split_rule_columns(rule_text: str) -> tuple[str, str]:
     return indicator, window
 
 def thresholds_to_policy(rule_text: str, params: dict | str | None) -> str:
+    """
+    Map thresholds to Risk Appetite labels (Set B):
+      Aggressive (≈0.50), Moderate (≈0.52), Conservative (≈0.55), Ultra-Conservative (≈0.60).
+    If no thresholds found -> Aggressive.
+    """
     d = _params_to_dict(params or {})
     hi = d.get("hi"); lo = d.get("lo")
+
     if hi is None and isinstance(rule_text, str):
-        m = re.search(r"hi/lo\s+([0-9.]+)\s*/\s*([0-9.]+)", rule_text)
+        m = re.search(r"hi/lo\s+([0-9.]+)\s*/\s*([0-9.]+)", rule_text or "")
         if m:
             try:
                 hi = float(m.group(1)); lo = float(m.group(2))
             except Exception:
                 hi = lo = None
+
     if hi is None or lo is None:
         return "Aggressive"
     if hi >= 0.595:
@@ -468,6 +494,7 @@ def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, datas
 
     df = df[(df["asset"] == asset) & (df["freq"] == freq) & (df["dataset"] == dataset)].copy()
 
+    # robust labels and renames
     df = derive_labels(df)
     df.rename(columns={"family":"Family","model_label":"Model","rule_label":"Rule",
                        "sharpe":"Sharpe","max_dd":"Max DD","ann_return":"Annual Return"}, inplace=True)
@@ -475,12 +502,12 @@ def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, datas
     if "params" not in df.columns:
         df["params"] = None
 
-    # Indicator + Window and policy
+    # Build Setup and Policy, and friendly model names
     parts = df.apply(lambda r: split_rule_columns(str(r.get("Rule", ""))), axis=1)
     df["Indicator"], df["Window"] = zip(*parts)
     df["Setup"] = df.apply(
         lambda r: (
-            r["Indicator"].replace("Moving Average Crossover","MA cross")
+            r["Indicator"]
             + (f" ({str(r['Window']).replace('-', '/')})" if pd.notna(r["Window"]) and str(r["Window"]).strip() not in ["", "nan"] else "")
         ),
         axis=1,
@@ -488,8 +515,8 @@ def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, datas
     df["Model"] = df["Model"].apply(_model_friendly)
     df["Confidence Policy"] = df.apply(lambda r: thresholds_to_policy(str(r.get("Rule","")), r.get("params")), axis=1)
 
-    # Controls
-    models   = sorted(df["Model"].dropna().unique().tolist())
+    # Controls (drop Family)
+    models = sorted(df["Model"].dropna().unique().tolist())
     c1,c2 = st.columns([1.3,1.3])
     with c1:
         sel_mod = st.multiselect("Model", models, default=models)
@@ -535,7 +562,7 @@ def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, datas
             .bar(subset=["Sharpe"], align="zero")
     )
     try:
-        import matplotlib  # optional for gradient
+        import matplotlib  # optional gradient
         styled = styled.background_gradient(subset=["Annual Return"], cmap="Greens")
     except Exception:
         pass
