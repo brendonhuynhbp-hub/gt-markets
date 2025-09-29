@@ -132,36 +132,6 @@ def thresholds_to_policy(rule_text: str, params: dict | str | None) -> str:
     if hi >= 0.515:
         return "Moderate"
     return "Aggressive"
-
-def format_setup(rule_text: str, indicator: str, window: str) -> str:
-    """
-    Standardize Setup labels:
-    - MACD -> "MACD cross (12/26, 9)"
-    - RSI  -> "RSI(14) > 70" / "RSI(14) < 30" when detectable; else "RSI(14)"
-    - Others -> "<Indicator> (10/50)" style if window exists.
-    """
-    import re as _re
-    ind = (indicator or "").strip()
-    win = (window or "").strip()
-
-    if ind.upper().startswith("MACD"):
-        parts = win.split("-") if win else []
-        if len(parts) >= 3:
-            return f"MACD cross ({parts[0]}/{parts[1]}, {parts[2]})"
-        return "MACD cross"
-
-    if ind.upper().startswith("RSI"):
-        period = win if win else "14" if win == "" else win
-        txt = rule_text or ""
-        if _re.search(r'>\s*70|overbought', txt, _re.I):
-            return f"RSI({period}) > 70"
-        if _re.search(r'<\s*30|oversold', txt, _re.I):
-            return f"RSI({period}) < 30"
-        return f"RSI({period})"
-
-    shown_win = win.replace("-", "/") if win else ""
-    return f"{ind} ({shown_win})" if shown_win else (ind or "-")
-
 # ===================== End Helpers for Strategy Insights =====================
 
 import json
@@ -513,7 +483,7 @@ def keyword_explorer_tab(models: pd.DataFrame, asset: str, freq: str):
               .applymap(_uplift_color, subset=["Uplift"]))
     st.dataframe(styled, use_container_width=True)
 
-def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, dataset: str):
+def strategy_insights_tab(strategies: pd.DataFrame, models: pd.DataFrame, asset: str, freq: str, dataset: str):
     st.subheader("Strategy Insights")
 
     df = strategies.copy()
@@ -532,22 +502,26 @@ def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, datas
     if "params" not in df.columns:
         df["params"] = None
 
-    # Indicator/Window from rule, user-friendly Setup string
+    # Build Setup and Policy, and friendly model names
     parts = df.apply(lambda r: split_rule_columns(str(r.get("Rule", ""))), axis=1)
     df["Indicator"], df["Window"] = zip(*parts)
-    df["Setup"] = df.apply(lambda r: format_setup(str(r.get("Rule","")), str(r.get("Indicator","")), str(r.get("Window",""))), axis=1)
-
-    # Model short label with target
+    df["Setup"] = df.apply(
+        lambda r: (
+            r["Indicator"]
+            + (f" ({str(r['Window']).replace('-', '/')})" if pd.notna(r["Window"]) and str(r["Window"]).strip() not in ["", "nan"] else "")
+        ),
+        axis=1,
+    )
     df["Model"] = df["Model"].apply(_model_friendly)
-
-    # Risk appetite policy
     df["Confidence Policy"] = df.apply(lambda r: thresholds_to_policy(str(r.get("Rule","")), r.get("params")), axis=1)
 
-    # Controls (drop Family)
-    models = sorted(df["Model"].dropna().unique().tolist())
+    # Controls (models from model_metrics)
+    all_model_codes = sorted(models["model"].dropna().astype(str).unique().tolist()) if "model" in models.columns else []
+    # Map to friendly labels
+    options = sorted({_model_friendly(m) for m in all_model_codes})
     c1,c2 = st.columns([1.3,1.3])
     with c1:
-        sel_mod = st.multiselect("Model", models, default=models)
+        sel_mod = st.multiselect("Model", options, default=options)
     with c2:
         sort_by = st.selectbox("Sort by", ["Sharpe","Annual Return","Max DD"], index=0)
 
@@ -707,7 +681,7 @@ def advanced_mode(models: pd.DataFrame, strategies: pd.DataFrame, signals: Dict[
     with tabs[1]:
         keyword_explorer_tab(models, asset, freq)
     with tabs[2]:
-        strategy_insights_tab(strategies, asset, freq, dataset_code)
+        strategy_insights_tab(strategies, models, asset, freq, dataset_code)
     with tabs[3]:
         context_tab(signals, asset, freq, dataset_code)
 
