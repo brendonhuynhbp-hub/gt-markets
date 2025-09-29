@@ -351,65 +351,88 @@ def context_tab(signals_map: dict, asset: str, freq: str, dataset: str, strategi
         return "Sideways"
 
     # Styles and custom renderer (avoid metric truncation)
+        # --- compact KPI grid styles ---
     st.markdown("""
     <style>
-      .metric-label{font-size:.85rem;color:#9aa0a6;margin-bottom:4px}
-      .metric-big{font-size:36px;font-weight:700;line-height:1.1;margin:0}
-      .text-blue{color:#0B5FFF!important}
-      .text-red{color:#ef4444!important}
+      .kpi{border:1px solid rgba(148,163,184,.25); border-radius:14px; padding:14px 16px; background:#0b1117;
+           height:100%; display:flex; flex-direction:column; gap:6px}
+      .kpi .label{font-size:.85rem; color:#9aa0a6}
+      .kpi .value{font-size:28px; font-weight:800; line-height:1.15}
+      .blue{color:#0B5FFF!important}
+      .red{color:#ef4444!important}
+      .pill{display:inline-block; padding:4px 10px; border:1px solid rgba(148,163,184,.25);
+            border-radius:999px; margin-right:6px; margin-top:6px; font-size:.85rem; color:#98a2b3}
     </style>
     """, unsafe_allow_html=True)
 
-    def _metric(col, label, value, color=None):
-        cls = f" text-{color}" if color else ""
+    def card(col, label, value, color=None):
+        c = f" {color}" if color else ""
         with col:
-            st.markdown(
-                f'<div class="metric-label">{label}</div>'
-                f'<div class="metric-big{cls}">{value}</div>',
-                unsafe_allow_html=True
-            )
+            st.markdown(f'''
+            <div class="kpi">
+              <div class="label">{label}</div>
+              <div class="value{c}">{value}</div>
+            </div>
+            ''', unsafe_allow_html=True)
 
-    # Signal & Confidence (no “As of”)
+    # values + colors
     signal_txt = str(snap.get("signal") or "-").upper()
     conf_val   = snap.get("confidence")
-    sig_color  = "blue" if signal_txt == "BUY" else ("red" if signal_txt == "SELL" else None)
+    dchg       = snap.get("chg_d")
+    wchg       = snap.get("chg_w")
+    rsi        = snap.get("rsi")
+    macd_hist  = snap.get("macd_hist")
+    vol_pctl   = snap.get("vol_pctile")
+    tstate     = trend_label()
 
-    c1, c2 = st.columns(2)
-    _metric(c1, "Signal", signal_txt, sig_color)
-    _metric(c2, "Confidence", f"{conf_val:.0f}%" if isinstance(conf_val, (int, float)) else "-", None)
+    def fmt_pct(x):
+        try: return f"{100*float(x):.1f}%"
+        except: return "-"
 
-    # Today's context tiles
-    dchg      = snap.get("chg_d")
-    wchg      = snap.get("chg_w")
-    rsi       = snap.get("rsi")
-    macd_hist = snap.get("macd_hist")
-    vol_pctl  = snap.get("vol_pctile")
-    tstate    = trend_label()
+    def bucket_vol(p):
+        try: p=float(p); return "Low" if p<0.33 else "Moderate" if p<0.66 else "High"
+        except: return "-"
 
-    today_color = "blue" if isinstance(dchg,(int,float)) and dchg > 0 else ("red" if isinstance(dchg,(int,float)) and dchg < 0 else None)
-    week_color  = "blue" if isinstance(wchg,(int,float)) and wchg > 0 else ("red" if isinstance(wchg,(int,float)) and wchg < 0 else None)
-    trend_color = "blue" if tstate.lower() == "uptrend" else ("red" if tstate.lower() == "downtrend" else None)
+    def bucket_rsi(v):
+        try:
+            v=float(v)
+            return f"{int(v)} (Overbought)" if v>=70 else f"{int(v)} (Oversold)" if v<=30 else f"{int(v)} (Neutral)"
+        except: return "-"
 
-    c1, c2, c3, c4, c5 = st.columns(5)
-    _metric(c1, "Today",   fmt_pct(dchg), today_color)
-    _metric(c2, "1W",      fmt_pct(wchg), week_color)
-    _metric(c3, "Trend",   tstate, trend_color)
-    _metric(c4, "RSI(14)", bucket_rsi(rsi), None)
-    _metric(c5, "MACD",    macd_txt(macd_hist), None)
+    def macd_txt(h):
+        try: h=float(h); return "Bullish" if h>0 else "Bearish" if h<0 else "Flat"
+        except: return "-"
 
-    # Keywords & short narrative
+    sig_color   = "blue" if signal_txt=="BUY" else "red" if signal_txt=="SELL" else None
+    today_color = "blue" if isinstance(dchg,(int,float)) and dchg>0 else "red" if isinstance(dchg,(int,float)) and dchg<0 else None
+    week_color  = "blue" if isinstance(wchg,(int,float)) and wchg>0 else "red" if isinstance(wchg,(int,float)) and wchg<0 else None
+    trend_color = "blue" if tstate.lower()=="uptrend" else "red" if tstate.lower()=="downtrend" else None
+
+    # row 1
+    r1 = st.columns(4)
+    card(r1[0], "Signal", signal_txt, sig_color)
+    card(r1[1], "Confidence", f"{conf_val:.0f}%" if isinstance(conf_val,(int,float)) else "-")
+    card(r1[2], "Trend", tstate, trend_color)
+    card(r1[3], "RSI(14)", bucket_rsi(rsi))
+
+    # row 2
+    r2 = st.columns(4)
+    card(r2[0], "Today", fmt_pct(dchg), today_color)
+    card(r2[1], "1W", fmt_pct(wchg), week_color)
+    card(r2[2], "MACD", macd_txt(macd_hist))
+    card(r2[3], "Volatility", bucket_vol(vol_pctl))
+
+    # keywords pills
     kws = snap.get("top_keywords") or snap.get("keywords") or []
-    if isinstance(kws, (list, tuple)) and kws:
-        st.caption("Notable keywords: " + ", ".join(map(str, kws)))
+    if isinstance(kws,(list,tuple)) and kws:
+        st.markdown("".join([f'<span class="pill">{str(k)}</span>' for k in kws]), unsafe_allow_html=True)
 
-    parts = []
+    # concise summary
+    parts=[]
     if isinstance(dchg,(int,float)): parts.append(f"{fmt_pct(dchg)} today")
     if isinstance(wchg,(int,float)): parts.append(f"{fmt_pct(wchg)} this week")
     if parts:
-        st.write(
-            f"**Summary:** {asset} {', '.join(parts)}; trend **{tstate}**, "
-            f"momentum **RSI {bucket_rsi(rsi)}**, volatility **{bucket_vol(vol_pctl)}**."
-        )
+        st.write(f"**Summary:** {asset} {', '.join(parts)}; trend **{tstate}**, RSI **{bucket_rsi(rsi)}**, vol **{bucket_vol(vol_pctl)}**.")
 
 # ---------------------------------------------------------------------
 # Advanced Mode
