@@ -133,47 +133,34 @@ def thresholds_to_policy(rule_text: str, params: dict | str | None) -> str:
         return "Moderate"
     return "Aggressive"
 
-
 def format_setup(rule_text: str, indicator: str, window: str) -> str:
     """
-    Return a clean Setup label:
+    Standardize Setup labels:
     - MACD -> "MACD cross (12/26, 9)"
     - RSI  -> "RSI(14) > 70" / "RSI(14) < 30" when detectable; else "RSI(14)"
-    - Others -> "<Indicator> (<window with 10/50 style>)" when window exists
+    - Others -> "<Indicator> (10/50)" style if window exists.
     """
     import re as _re
-
     ind = (indicator or "").strip()
     win = (window or "").strip()
 
-    # MACD
     if ind.upper().startswith("MACD"):
-        # window like "12-26-9" -> "12/26, 9"
-        if win and "-" in win:
-            parts = win.split("-")
-            if len(parts) >= 3:
-                return f"MACD cross ({parts[0]}/{parts[1]}, {parts[2]})"
-        # fallback if unknown
+        parts = win.split("-") if win else []
+        if len(parts) >= 3:
+            return f"MACD cross ({parts[0]}/{parts[1]}, {parts[2]})"
         return "MACD cross"
 
-    # RSI
     if ind.upper().startswith("RSI"):
-        # win may be "14"
-        period = win if win else ""
-        rhs = ""
+        period = win if win else "14" if win == "" else win
         txt = rule_text or ""
-        # try detect overbought/oversold from text tokens
-        if _re.search(r'>\s*70|overbought|gt\s*70', txt, _re.I):
-            rhs = " > 70"
-        elif _re.search(r'<\s*30|oversold|lt\s*30', txt, _re.I):
-            rhs = " < 30"
-        return f"RSI({period}){rhs}" if period else f"RSI{rhs}"
+        if _re.search(r'>\s*70|overbought', txt, _re.I):
+            return f"RSI({period}) > 70"
+        if _re.search(r'<\s*30|oversold', txt, _re.I):
+            return f"RSI({period}) < 30"
+        return f"RSI({period})"
 
-    # MA cross and others: show "Indicator (10/50)"
     shown_win = win.replace("-", "/") if win else ""
-    if shown_win:
-        return f"{ind} ({shown_win})".strip()
-    return ind or "-"
+    return f"{ind} ({shown_win})" if shown_win else (ind or "-")
 
 # ===================== End Helpers for Strategy Insights =====================
 
@@ -545,11 +532,15 @@ def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, datas
     if "params" not in df.columns:
         df["params"] = None
 
-    # Build Setup and Policy, and friendly model names
+    # Indicator/Window from rule, user-friendly Setup string
     parts = df.apply(lambda r: split_rule_columns(str(r.get("Rule", ""))), axis=1)
     df["Indicator"], df["Window"] = zip(*parts)
-                df["Setup"] = df.apply(lambda r: format_setup(str(r.get("Rule","")), str(r.get("Indicator","")), str(r.get("Window",""))), axis=1)
+    df["Setup"] = df.apply(lambda r: format_setup(str(r.get("Rule","")), str(r.get("Indicator","")), str(r.get("Window",""))), axis=1)
+
+    # Model short label with target
     df["Model"] = df["Model"].apply(_model_friendly)
+
+    # Risk appetite policy
     df["Confidence Policy"] = df.apply(lambda r: thresholds_to_policy(str(r.get("Rule","")), r.get("params")), axis=1)
 
     # Controls (drop Family)
