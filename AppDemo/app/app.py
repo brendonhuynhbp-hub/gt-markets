@@ -515,17 +515,35 @@ def strategy_insights_tab(strategies: pd.DataFrame, models: pd.DataFrame, asset:
     df["Model"] = df["Model"].apply(_model_friendly)
     df["Confidence Policy"] = df.apply(lambda r: thresholds_to_policy(str(r.get("Rule","")), r.get("params")), axis=1)
 
-    # Controls (models from model_metrics)
+    # Controls (counts-aware model picker)
+    # Friendly mapping for all model codes from model_metrics
     all_model_codes = sorted(models["model"].dropna().astype(str).unique().tolist()) if "model" in models.columns else []
-    # Map to friendly labels
-    options = sorted({_model_friendly(m) for m in all_model_codes})
+    all_friendly = sorted({_model_friendly(m) for m in all_model_codes})
+
+    # Count strategies per friendly model for current filters
+    df_counts = df.copy()
+    df_counts["Model"] = df_counts["Model"].apply(_model_friendly)
+    counts = df_counts["Model"].value_counts().to_dict()
+
+    # Build available and missing lists
+    available = [m for m in all_friendly if counts.get(m, 0) > 0]
+    missing = [m for m in all_friendly if counts.get(m, 0) == 0]
+
+    include_missing = st.checkbox("Include models with no strategies", value=False)
+    options = available + (missing if include_missing else [])
+
     c1,c2 = st.columns([1.3,1.3])
     with c1:
-        sel_mod = st.multiselect("Model", options, default=options)
+        default_sel = available if available else options
+        sel_mod = st.multiselect("Model", options, default=default_sel)
     with c2:
         sort_by = st.selectbox("Sort by", ["Sharpe","Annual Return","Max DD"], index=0)
 
     q = st.text_input("Search (Setup / Model / Policy)", "")
+
+    # Small hint if empty
+    if not available:
+        st.caption("No strategies found for the current filters. Try a different Asset/Frequency/Dataset or include models with no strategies.")
 
     # Filter
     f = df[df["Model"].isin(sel_mod)].copy()
