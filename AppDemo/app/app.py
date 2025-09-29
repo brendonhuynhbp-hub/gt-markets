@@ -85,7 +85,7 @@ def thresholds_to_policy(rule_text: str, params: dict | str | None) -> str:
     if hi >= 0.595:
         return "Ultra-Conservative"
     if hi >= 0.545:
-        return "Conservative (Baseline)"
+        return "Conservative"
     if hi >= 0.515:
         return "Moderate"
     return "Aggressive"
