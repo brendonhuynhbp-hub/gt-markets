@@ -631,26 +631,136 @@ def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, datas
 
 
 def context_tab(signals: Dict[str, Any], asset: str, freq: str, dataset_code: str):
-    # try to find a matching signal
+    """Snapshot-only context view: compact KPI cards, no 'as of', no backtest."""
+    st.subheader("Context")
+
+    # ---- find matching snapshot (supports "BTC-W-ext" or object records) ----
     target = None
     for k, v in signals.items():
-        # support both compact keys and full records
         a = v.get("asset") or (k.split("-")[0] if "-" in k else "")
         f = v.get("freq")  or (k.split("-")[1] if "-" in k and len(k.split("-")) >= 2 else "")
         d = (v.get("dataset") or (k.split("-")[2] if "-" in k and len(k.split("-")) >= 3 else "")).lower()
         if a == asset and str(f).upper() == freq and d == dataset_code.lower():
-            target = v; break
+            target = v
+            break
 
-    st.subheader("Context")
-    if not target:
-        st.caption("No snapshot entry for this selection.")
-        return
-    st.markdown("#### Sentiment gauge")
-    st.caption("Index reflects model confidence / predicted return strength (0–100).")
-    st.plotly_chart(
-        gauge(target.get("index", 0), target.get("decision", "SELL"), f"{asset} · {freq} · {dataset_code.upper()}", True),
-        use_container_width=True
-    )
+    # ---- demo fallback if missing ----
+    if not isinstance(target, dict) or not target:
+        target = {
+            "signal": "BUY",
+            "confidence": 72,
+            "chg_d": 0.012,           # +1.2% today
+            "chg_w": 0.035,           # +3.5% this week
+            "rsi": 56,
+            "macd_hist": 0.004,
+            "vol_pctile": 0.55,
+            "trend_state": "Uptrend",
+            "top_keywords": ["ETF inflow", "halving", "institutional"],
+        }
+
+    # ---- helpers ----
+    def fmt_pct(x):
+        try: return f"{100*float(x):.1f}%"
+        except: return "–"
+
+    def bucket_vol(p):
+        try:
+            p = float(p)
+            return "Low" if p < 0.33 else "Moderate" if p < 0.66 else "High"
+        except:
+            return "–"
+
+    def bucket_rsi(v):
+        try:
+            v = float(v)
+            if v >= 70: return f"{int(v)} (Overbought)"
+            if v <= 30: return f"{int(v)} (Oversold)"
+            return f"{int(v)} (Neutral)"
+        except:
+            return "–"
+
+    def macd_txt(h):
+        try:
+            h = float(h)
+            return "Bullish" if h > 0 else "Bearish" if h < 0 else "Flat"
+        except:
+            return "–"
+
+    def trend_label():
+        t = str(target.get("trend_state") or "").strip()
+        if t: return t
+        sig = str(target.get("signal") or "").upper()
+        if sig == "BUY":  return "Uptrend"
+        if sig == "SELL": return "Downtrend"
+        return "Sideways"
+
+    # values
+    signal_txt = str(target.get("signal") or "-").upper()
+    conf_val   = target.get("confidence")
+    dchg       = target.get("chg_d")
+    wchg       = target.get("chg_w")
+    rsi        = target.get("rsi")
+    macd_hist  = target.get("macd_hist")
+    vol_pctl   = target.get("vol_pctile")
+    tstate     = trend_label()
+
+    # colors
+    sig_color   = "blue" if signal_txt == "BUY" else "red" if signal_txt == "SELL" else ""
+    today_color = "blue" if isinstance(dchg, (int, float)) and dchg > 0 else "red" if isinstance(dchg, (int, float)) and dchg < 0 else ""
+    week_color  = "blue" if isinstance(wchg, (int, float)) and wchg > 0 else "red" if isinstance(wchg, (int, float)) and wchg < 0 else ""
+    trend_color = "blue" if tstate.lower() == "uptrend" else "red" if tstate.lower() == "downtrend" else ""
+
+    # ---- compact card grid styling ----
+    st.markdown("""
+    <style>
+      .kpi{border:1px solid rgba(148,163,184,.25); border-radius:14px; padding:14px 16px; background:#0b1117;
+           height:100%; display:flex; flex-direction:column; gap:6px}
+      .kpi .label{font-size:.85rem; color:#9aa0a6}
+      .kpi .value{font-size:28px; font-weight:800; line-height:1.15}
+      .blue{color:#0B5FFF!important}
+      .red{color:#ef4444!important}
+      .pill{display:inline-block; padding:4px 10px; border:1px solid rgba(148,163,184,.25);
+            border-radius:999px; margin-right:6px; margin-top:6px; font-size:.85rem; color:#98a2b3}
+    </style>
+    """, unsafe_allow_html=True)
+
+    def card(col, label, value, color_cls=""):
+        with col:
+            st.markdown(
+                f'<div class="kpi"><div class="label">{label}</div>'
+                f'<div class="value {color_cls}">{value}</div></div>',
+                unsafe_allow_html=True
+            )
+
+    # ---- row 1 ----
+    r1 = st.columns(4)
+    card(r1[0], "Signal", signal_txt, sig_color)
+    card(r1[1], "Confidence", f"{conf_val:.0f}%" if isinstance(conf_val, (int, float)) else "–")
+    card(r1[2], "Trend", tstate, trend_color)
+    card(r1[3], "RSI(14)", bucket_rsi(rsi))
+
+    # ---- row 2 ----
+    r2 = st.columns(4)
+    card(r2[0], "Today", fmt_pct(dchg), today_color)
+    card(r2[1], "1W", fmt_pct(wchg), week_color)
+    card(r2[2], "MACD", macd_txt(macd_hist))
+    card(r2[3], "Volatility", bucket_vol(vol_pctl))
+
+    # ---- keywords pills ----
+    kws = target.get("top_keywords") or target.get("keywords") or []
+    if isinstance(kws, (list, tuple)) and kws:
+        st.markdown("".join([f'<span class="pill">{str(k)}</span>' for k in kws]), unsafe_allow_html=True)
+
+    # ---- concise summary ----
+    parts = []
+    if isinstance(dchg, (int, float)): parts.append(f"{fmt_pct(dchg)} today")
+    if isinstance(wchg, (int, float)): parts.append(f"{fmt_pct(wchg)} this week")
+    if parts:
+        st.write(
+            f"**Summary:** {asset} {', '.join(parts)}; trend **{tstate}**, "
+            f"RSI **{bucket_rsi(rsi)}**, volatility **{bucket_vol(vol_pctl)}**."
+        )
+
 
 # ------------------------------------------------------------
 # Modes
