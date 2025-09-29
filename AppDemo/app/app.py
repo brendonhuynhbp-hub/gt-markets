@@ -702,7 +702,7 @@ def context_tab(signals: Dict[str, Any], asset: str, freq: str, dataset_code: st
            background: rgba(255,255,255,0.02); height:100%;
            display:flex; flex-direction:column; gap:6px}
       .kpi .label{font-size:.85rem; color:#b9c3cf}
-      .kpi .value{font-size:26px; font-weight:800; line-height:1.15; color:#eef2f7}
+      .kpi .value{font-size:26px; font-weight:800; line-height:1.15; color:#000000}
       .blue{color:#2D7CFF!important}
       .red{color:#FF5C5C!important}
       .pill{display:inline-block; padding:4px 10px; border:1px solid rgba(255,255,255,.18);
