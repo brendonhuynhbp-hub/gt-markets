@@ -548,7 +548,7 @@ def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, datas
     # Build Setup and Policy, and friendly model names
     parts = df.apply(lambda r: split_rule_columns(str(r.get("Rule", ""))), axis=1)
     df["Indicator"], df["Window"] = zip(*parts)
-            df["Setup"] = df.apply(lambda r: format_setup(str(r.get("Rule","")), str(r.get("Indicator","")), str(r.get("Window",""))), axis=1)
+                df["Setup"] = df.apply(lambda r: format_setup(str(r.get("Rule","")), str(r.get("Indicator","")), str(r.get("Window",""))), axis=1)
     df["Model"] = df["Model"].apply(_model_friendly)
     df["Confidence Policy"] = df.apply(lambda r: thresholds_to_policy(str(r.get("Rule","")), r.get("params")), axis=1)
 
