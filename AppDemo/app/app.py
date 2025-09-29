@@ -7,11 +7,12 @@ import numpy as np
 def derive_labels(df: pd.DataFrame) -> pd.DataFrame:
     """
     Populate model_label / rule_label robustly from existing columns.
-    - If labels exist but are blank/NaN, recompute them.
     - params may be dict, JSON string, or repr; try to parse.
-    - Prefer ta_label for Rule if available; else 'rule' or 'ta_label' inside params.
+    - Prefer ta_label -> ta -> rule for 'Rule'.
+    - If hi/lo exist, append ' · hi/lo X/Y'.
     """
     import pandas as pd, json, ast
+
     def _to_dict(v):
         if isinstance(v, dict):
             return v
@@ -24,29 +25,52 @@ def derive_labels(df: pd.DataFrame) -> pd.DataFrame:
                 except Exception:
                     pass
         return {}
-    # Ensure label cols exist
+
     if "model_label" not in df.columns:
         df["model_label"] = pd.NA
     if "rule_label" not in df.columns:
         df["rule_label"] = pd.NA
+
     need_model = df["model_label"].fillna("").eq("").any()
     need_rule  = df["rule_label"].fillna("").eq("").any()
+
     if need_model or need_rule:
         p = df["params"] if "params" in df.columns else pd.Series([""]*len(df), index=df.index)
         parsed = p.apply(_to_dict)
+
         if need_model:
             fill_model = parsed.apply(lambda d: str(d.get("model","")) if isinstance(d, dict) else "")
             df.loc[df["model_label"].fillna("").eq(""), "model_label"] = fill_model
+
         if need_rule:
+            # 1) If a ta_label column exists and is non-empty, use it
             if "ta_label" in df.columns:
                 ta_col = df["ta_label"].astype(str)
                 mask = df["rule_label"].fillna("").eq("") & ta_col.ne("")
                 df.loc[mask, "rule_label"] = ta_col
-            fallback = parsed.apply(lambda d: str(d.get("rule", d.get("ta_label",""))) if isinstance(d, dict) else "")
+
+            # 2) Build from params: prefer 'ta_label', then 'ta', then 'rule'
+            def build_rule(d: dict) -> str:
+                if not isinstance(d, dict):
+                    return ""
+                base = str(d.get("ta_label") or d.get("ta") or d.get("rule") or "")
+                if base:
+                    hi, lo = d.get("hi"), d.get("lo")
+                    try:
+                        if hi is not None and lo is not None:
+                            base = f"{base} · hi/lo {float(hi):.2f}/{float(lo):.2f}"
+                    except Exception:
+                        pass
+                return base
+
+            fallback = parsed.apply(build_rule)
             df.loc[df["rule_label"].fillna("").eq(""), "rule_label"] = fallback
+
     for c in ["model_label","rule_label"]:
         df[c] = df[c].replace("", pd.NA)
+
     return df
+
 
 import json
 from pathlib import Path
