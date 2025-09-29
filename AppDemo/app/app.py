@@ -19,55 +19,33 @@ def _params_to_dict(v):
     return {}
 
 def derive_labels(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Fill model_label / rule_label from `params` or existing columns.
-    - Prefer: ta_label -> ta -> rule
-    - Append ' · hi/lo X/Y' when thresholds exist.
-    """
     import pandas as pd
     if "model_label" not in df.columns:
         df["model_label"] = pd.NA
     if "rule_label" not in df.columns:
         df["rule_label"] = pd.NA
-
     need_model = df["model_label"].fillna("").eq("").any()
     need_rule  = df["rule_label"].fillna("").eq("").any()
-
     if need_model or need_rule:
         p = df["params"] if "params" in df.columns else pd.Series([""]*len(df), index=df.index)
         parsed = p.apply(_params_to_dict)
-
         if need_model:
             fill_model = parsed.apply(lambda d: str(d.get("model","")) if isinstance(d, dict) else "")
             df.loc[df["model_label"].fillna("").eq(""), "model_label"] = fill_model
-
         if need_rule:
-            # 1) from ta_label column if present
             if "ta_label" in df.columns:
                 ta_col = df["ta_label"].astype(str)
                 mask = df["rule_label"].fillna("").eq("") & ta_col.ne("")
                 df.loc[mask, "rule_label"] = ta_col
-
-            # 2) fallback from params: ta_label -> ta -> rule (+ thresholds)
             def build_rule(d: dict) -> str:
                 if not isinstance(d, dict):
                     return ""
                 base = str(d.get("ta_label") or d.get("ta") or d.get("rule") or "")
-                if base:
-                    hi, lo = d.get("hi"), d.get("lo")
-                    try:
-                        if hi is not None and lo is not None:
-                            base = f"{base} · hi/lo {float(hi):.2f}/{float(lo):.2f}"
-                    except Exception:
-                        pass
                 return base
-
             fallback = parsed.apply(build_rule)
             df.loc[df["rule_label"].fillna("").eq(""), "rule_label"] = fallback
-
     for c in ["model_label","rule_label"]:
         df[c] = df[c].replace("", pd.NA)
-
     return df
 
 _INDICATOR_NAMES = {
@@ -77,30 +55,9 @@ _INDICATOR_NAMES = {
     "TA_BBands": "Bollinger Bands",
 }
 
-def split_rule_columns(rule_text: str, params: dict | str | None) -> tuple[str, str, str]:
-    """
-    Return (Indicator, Window, Thresholds) from a raw rule string and params.
-    - Works with forms like 'TA_MAcross_10-50 · hi/lo 0.55/0.45'
-    - If params contain hi/lo, they are used for thresholds.
-    """
-    d = _params_to_dict(params or {})
-    hi, lo = d.get("hi"), d.get("lo")
-    thresholds = ""
-    try:
-        if hi is not None and lo is not None:
-            thresholds = f"{float(hi):.2f} / {float(lo):.2f}"
-    except Exception:
-        thresholds = ""
-
-    if not thresholds and isinstance(rule_text, str):
-        import re as _re
-        m = _re.search(r"hi/lo\s+([0-9.]+)\s*/\s*([0-9.]+)", rule_text)
-        if m:
-            thresholds = f"{float(m.group(1)):.2f} / {float(m.group(2)):.2f}"
-
+def split_rule_columns(rule_text: str) -> tuple[str, str]:
     indicator = ""
     window = ""
-
     if isinstance(rule_text, str) and rule_text:
         base = rule_text.split("·")[0].strip()
         parts = base.split("_")
@@ -111,8 +68,27 @@ def split_rule_columns(rule_text: str, params: dict | str | None) -> tuple[str, 
                 window = parts[2]
         else:
             indicator = base
+    return indicator, window
 
-    return indicator, window, thresholds
+def thresholds_to_policy(rule_text: str, params: dict | str | None) -> str:
+    d = _params_to_dict(params or {})
+    hi = d.get("hi"); lo = d.get("lo")
+    if hi is None and isinstance(rule_text, str):
+        m = re.search(r"hi/lo\s+([0-9.]+)\s*/\s*([0-9.]+)", rule_text)
+        if m:
+            try:
+                hi = float(m.group(1)); lo = float(m.group(2))
+            except Exception:
+                hi = lo = None
+    if hi is None or lo is None:
+        return "Aggressive"
+    if hi >= 0.595:
+        return "Ultra-Conservative"
+    if hi >= 0.545:
+        return "Conservative (Baseline)"
+    if hi >= 0.515:
+        return "Moderate"
+    return "Aggressive"
 # ===================== End Helpers for Strategy Insights =====================
 
 import json
@@ -466,24 +442,20 @@ def keyword_explorer_tab(models: pd.DataFrame, asset: str, freq: str):
 
 def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, dataset: str):
     st.subheader("Strategy Insights")
-
     df = strategies.copy()
     for col in ["asset","freq","dataset","family","sharpe","max_dd","ann_return"]:
         if col not in df.columns:
             st.warning(f"Missing column '{col}' in strategies data.")
             return
-
     df = df[(df["asset"] == asset) & (df["freq"] == freq) & (df["dataset"] == dataset)].copy()
-
     df = derive_labels(df)
     df.rename(columns={"family":"Family","model_label":"Model","rule_label":"Rule",
                        "sharpe":"Sharpe","max_dd":"Max DD","ann_return":"Annual Return"}, inplace=True)
-
     if "params" not in df.columns:
         df["params"] = None
-    parts = df.apply(lambda r: split_rule_columns(str(r.get("Rule", "")), r.get("params")), axis=1)
-    df["Indicator"], df["Window"], df["Thresholds"] = zip(*parts)
-
+    parts = df.apply(lambda r: split_rule_columns(str(r.get("Rule", ""))), axis=1)
+    df["Indicator"], df["Window"] = zip(*parts)
+    df["Confidence Policy"] = df.apply(lambda r: thresholds_to_policy(str(r.get("Rule","")), r.get("params")), axis=1)
     families = sorted(df["Family"].dropna().unique().tolist())
     models   = sorted(df["Model"].dropna().unique().tolist())
     c1,c2,c3 = st.columns([1.2,1.2,1.2])
@@ -493,46 +465,37 @@ def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, datas
         sel_mod = st.multiselect("Model", models, default=models)
     with c3:
         sort_by = st.selectbox("Sort by", ["Sharpe","Annual Return","Max DD"], index=0)
-
-    q = st.text_input("Search (Indicator / Window / Thresholds)", "")
-
+    q = st.text_input("Search (Indicator / Window / Policy)", "")
     f = df[df["Family"].isin(sel_fam) & df["Model"].isin(sel_mod)].copy()
     if q.strip():
         qre = re.compile(re.escape(q), re.I)
         mask = (
             f["Indicator"].fillna("").str.contains(qre) |
             f["Window"].fillna("").str.contains(qre) |
-            f["Thresholds"].fillna("").str.contains(qre) |
+            f["Confidence Policy"].fillna("").str.contains(qre) |
             f["Rule"].fillna("").str.contains(qre)
         )
         f = f[mask]
-
-    f = (f.drop_duplicates(subset=["Family","Model","Indicator","Window","Thresholds","Sharpe","Max DD","Annual Return"])
+    f = (f.drop_duplicates(subset=["Family","Model","Indicator","Window","Confidence Policy","Sharpe","Max DD","Annual Return"])
            .reset_index(drop=True))
     asc = (sort_by == "Max DD")
     f = f.sort_values(by=[sort_by], ascending=asc)
-
     st.caption(f"Showing **{len(f):,}** strategies across **{f['Family'].nunique()}** family(ies).")
-
-    show = f[["Family","Model","Indicator","Window","Thresholds","Sharpe","Max DD","Annual Return"]].copy()
+    show = f[["Family","Model","Indicator","Window","Confidence Policy","Sharpe","Max DD","Annual Return"]].copy()
     for col in ["Sharpe","Max DD","Annual Return"]:
         show[col] = pd.to_numeric(show[col], errors="coerce")
-
     def fmt_dec(x): return f"{x:.2f}" if pd.notna(x) else "-"
-
     styled = (show.style
         .format({"Sharpe": fmt_dec, "Max DD": fmt_dec, "Annual Return": fmt_dec})
         .apply(lambda s: ["color:#e74c3c" if (pd.notna(v) and v < 0) else "" for v in s] if s.name=="Max DD" else [""]*len(s))
         .bar(subset=["Sharpe"], align="zero")
     )
     try:
-        import matplotlib  # optional
+        import matplotlib
         styled = styled.background_gradient(subset=["Annual Return"], cmap="Greens")
     except Exception:
-        styled = styled.apply(lambda s: ["color:#2ecc71" if (pd.notna(v) and v >= 0) else ("color:#e74c3c" if pd.notna(v) else "") for v in s] if s.name=="Annual Return" else [""]*len(s))
-
+        pass
     st.dataframe(styled, use_container_width=True, hide_index=True)
-
     csv = show.to_csv(index=False).encode("utf-8")
     st.download_button("Download filtered CSV", csv, file_name=f"strategies_{asset}_{freq}_{dataset}.csv", mime="text/csv")
 
