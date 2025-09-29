@@ -408,10 +408,11 @@ def simple_card(asset: str, sig: Dict[str, Any], show_gauge: bool):
     ta_txt = f"; {ta} confirmation" if ta else ""
     border = "2px solid #1e9e49" if decision == "BUY" else "2px solid #d9534f"
 
+    # >>> CHANGED: asset name color set to white (#ffffff)
     st.markdown(f"""
     <div style="border:{border};border-radius:12px;padding:12px 14px;margin-bottom:10px;background:#121212;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
-        <div style="font-size:1.05rem;font-weight:700;">{asset}</div>
+        <div style="font-size:1.05rem;font-weight:700;color:#ffffff;">{asset}</div>
         <div>{dec_p}{str_p}</div>
       </div>
       <div style="color:#cfcfcf;margin-top:6px;">{reason}{ta_txt}.</div>
