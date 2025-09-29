@@ -631,109 +631,71 @@ def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, datas
 
 
 def context_tab(signals: Dict[str, Any], asset: str, freq: str, dataset_code: str):
-    """Snapshot-only context view driven by the best Sharpe strategy when available.
-    No hard-coded demo; if nothing is found, show dashes gracefully.
-    """
-    st.subheader("Context")
+    """Demo-only snapshot that varies by (asset, freq). No backtest. High-contrast cards."""
+    import numpy as np
+    import streamlit as st
 
-    # ---------- 1) Try to locate the BEST strategy (max Sharpe) ----------
-    best_model_key = None
-    try:
-        if isinstance(strategy_metrics, pd.DataFrame) and not strategy_metrics.empty:
-            df = strategy_metrics.copy()
-            for col, val in [("asset", asset), ("freq", freq), ("dataset", dataset_code)]:
-                if col in df.columns:
-                    df = df[df[col] == val]
-            if not df.empty and "sharpe" in df.columns:
-                row = df.sort_values("sharpe", ascending=False).iloc[0]
-                # accept any of these identifiers as a "model key" we can match inside `signals`
-                for k in ("model", "Model", "model_label", "family_id"):
-                    if k in row and pd.notna(row[k]):
-                        best_model_key = str(row[k]).strip()
-                        break
-    except Exception:
-        pass
+    # ---------- deterministic demo generator (varies by asset+freq) ----------
+    key = f"{asset}-{freq}".upper()
+    seed = (abs(hash(key)) % (2**32 - 1)) or 42
+    rng = np.random.default_rng(seed)
 
-    # ---------- 2) Find the most appropriate snapshot from `signals` ----------
-    target = None
+    # choose signal & trend consistently
+    sig = rng.choice(["BUY", "SELL", "HOLD"], p=[0.48, 0.32, 0.20])
+    trend = {"BUY": "Uptrend", "SELL": "Downtrend", "HOLD": "Sideways"}[sig]
 
-    def _match_snapshot(k: str, v: dict) -> bool:
-        """Check if a signals entry matches our requested context and (optionally) the best model."""
-        try:
-            a = str(v.get("asset") or (k.split("-")[0] if "-" in k else "")).strip()
-            f = str(v.get("freq")  or (k.split("-")[1] if "-" in k else "")).strip().upper()
-            d = str(v.get("dataset") or (k.split("-")[2] if "-" in k and len(k.split("-")) >= 3 else "")).strip().lower()
-            ok = (a == asset) and (f == freq)
-            if dataset_code:
-                ok = ok and (not d or d == dataset_code.lower() or dataset_code.lower() in d)
-            if best_model_key:
-                m = str(v.get("model") or v.get("Model") or v.get("family_id") or "").strip()
-                ok = ok and (not m or best_model_key.lower() in m.lower())
-            return ok
-        except Exception:
-            return False
+    # confidence & moves (skew to match signal)
+    base_conf = rng.integers(58, 86)  # 58–85%
+    dmove = rng.normal(0.006, 0.012)  # ~0.6% avg, +/- 1.2% std
+    wmove = rng.normal(0.018, 0.025)  # ~1.8% avg week
+    if sig == "BUY":
+        dmove = abs(dmove)
+        wmove = abs(wmove)
+    elif sig == "SELL":
+        dmove = -abs(dmove)
+        wmove = -abs(wmove)
+    else:
+        dmove *= 0.4
+        wmove *= 0.4
 
-    # 2a) Prefer an exact per-model snapshot if present
-    if isinstance(signals, dict):
-        for k, v in signals.items():
-            if isinstance(v, dict) and _match_snapshot(k, v):
-                target = v
-                break
-        # 2b) If no per-model match, fall back to a generic asset/freq snapshot
-        if target is None:
-            for k, v in signals.items():
-                if not isinstance(v, dict):
-                    continue
-                a = str(v.get("asset") or (k.split("-")[0] if "-" in k else "")).strip()
-                f = str(v.get("freq")  or (k.split("-")[1] if "-" in k else "")).strip().upper()
-                if a == asset and f == freq:
-                    target = v
-                    break
+    # momentum & vol
+    rsi = int(np.clip(rng.normal(54 if sig=="BUY" else 46 if sig=="SELL" else 50, 7), 15, 85))
+    macd_hist = float(rng.normal(0.004 if sig=="BUY" else -0.004 if sig=="SELL" else 0.0, 0.002))
+    vol_pctile = float(np.clip(rng.uniform(0.2, 0.85), 0, 1))
 
-    # ---------- 3) Helpers ----------
+    # keywords (vary by asset a bit)
+    kw_pool = {
+        "BTC": ["ETF inflow", "halving", "institutional", "on-chain"],
+        "OIL": ["OPEC supply", "inventory draw", "geopolitics", "refinery"],
+        "GOLD": ["real yields", "safe haven", "ETF holdings", "USD"],
+        "SPX": ["earnings", "rate cuts", "AI capex", "buybacks"],
+    }
+    kws = rng.choice(kw_pool.get(asset.upper(), ["momentum", "macro", "flows", "positioning"]),
+                     size=3, replace=False).tolist()
+
+    # ---------- helpers ----------
     def fmt_pct(x):
         try: return f"{100*float(x):.1f}%"
         except: return "–"
 
     def bucket_vol(p):
         try:
-            p = float(p)
-            return "Low" if p < 0.33 else "Moderate" if p < 0.66 else "High"
+            p = float(p);  return "Low" if p < 0.33 else "Moderate" if p < 0.66 else "High"
         except: return "–"
 
     def bucket_rsi(v):
         try:
             v = float(v)
-            if v >= 70: return f"{int(v)} (Overbought)"
-            if v <= 30: return f"{int(v)} (Oversold)"
-            return f"{int(v)} (Neutral)"
+            return f"{int(v)} (Overbought)" if v >= 70 else f"{int(v)} (Oversold)" if v <= 30 else f"{int(v)} (Neutral)"
         except: return "–"
 
     def macd_txt(h):
         try:
-            h = float(h)
-            return "Bullish" if h > 0 else "Bearish" if h < 0 else "Flat"
+            h = float(h);  return "Bullish" if h > 0 else "Bearish" if h < 0 else "Flat"
         except: return "–"
 
-    def trend_label(sig_val: str, explicit: str):
-        t = (explicit or "").strip()
-        if t: return t
-        s = (sig_val or "").upper()
-        if s == "BUY":  return "Uptrend"
-        if s == "SELL": return "Downtrend"
-        return "Sideways"
-
-    # ---------- 4) Pull values (no hard-coded defaults) ----------
-    sig = (target or {}).get("signal")
-    conf = (target or {}).get("confidence")
-    dchg = (target or {}).get("chg_d")
-    wchg = (target or {}).get("chg_w")
-    rsi  = (target or {}).get("rsi")
-    macd = (target or {}).get("macd_hist")
-    volp = (target or {}).get("vol_pctile")
-    tstate = trend_label(sig, (target or {}).get("trend_state"))
-
-    # ---------- 5) Styles for better readability (light cards, high contrast) ----------
+    # ---------- styles (high contrast, minimal fill) ----------
+    st.subheader("Context")
     st.markdown("""
     <style>
       .kpi{border:1px solid rgba(255,255,255,.18); border-radius:14px; padding:12px 14px;
@@ -757,41 +719,31 @@ def context_tab(signals: Dict[str, Any], asset: str, freq: str, dataset_code: st
             )
 
     # colors
-    sig_color   = "blue" if (sig or "").upper() == "BUY" else "red" if (sig or "").upper() == "SELL" else ""
-    today_color = "blue" if isinstance(dchg,(int,float)) and dchg>0 else "red" if isinstance(dchg,(int,float)) and dchg<0 else ""
-    week_color  = "blue" if isinstance(wchg,(int,float)) and wchg>0 else "red" if isinstance(wchg,(int,float)) and wchg<0 else ""
-    trend_color = "blue" if tstate.lower()=="uptrend" else "red" if tstate.lower()=="downtrend" else ""
+    sig_color   = "blue" if sig == "BUY" else "red" if sig == "SELL" else ""
+    today_color = "blue" if dmove > 0 else "red" if dmove < 0 else ""
+    week_color  = "blue" if wmove > 0 else "red" if wmove < 0 else ""
+    trend_color = "blue" if trend == "Uptrend" else "red" if trend == "Downtrend" else ""
 
-    # ---------- 6) Layout ----------
+    # ---------- layout ----------
     r1 = st.columns(4)
-    card(r1[0], "Signal", (str(sig).upper() if sig else "–"), sig_color)
-    card(r1[1], "Confidence", f"{conf:.0f}%" if isinstance(conf,(int,float)) else "–")
-    card(r1[2], "Trend", tstate if target else "–", trend_color if target else "")
-    card(r1[3], "RSI(14)", bucket_rsi(rsi) if target else "–")
+    card(r1[0], "Signal", sig, sig_color)
+    card(r1[1], "Confidence", f"{int(base_conf)}%")
+    card(r1[2], "Trend", trend, trend_color)
+    card(r1[3], "RSI(14)", bucket_rsi(rsi))
 
     r2 = st.columns(4)
-    card(r2[0], "Today", fmt_pct(dchg) if target else "–", today_color if target else "")
-    card(r2[1], "1W", fmt_pct(wchg) if target else "–", week_color if target else "")
-    card(r2[2], "MACD", macd_txt(macd) if target else "–")
-    card(r2[3], "Volatility", bucket_vol(volp) if target else "–")
+    card(r2[0], "Today", fmt_pct(dmove), today_color)
+    card(r2[1], "1W", fmt_pct(wmove), week_color)
+    card(r2[2], "MACD", macd_txt(macd_hist))
+    card(r2[3], "Volatility", bucket_vol(vol_pctile))
 
-    # keywords (if present)
-    kws = (target or {}).get("top_keywords") or (target or {}).get("keywords") or []
-    if isinstance(kws, (list, tuple)) and kws:
+    if kws:
         st.markdown("".join([f'<span class="pill">{str(k)}</span>' for k in kws]), unsafe_allow_html=True)
 
-    # succinct summary
-    if target:
-        parts = []
-        if isinstance(dchg,(int,float)): parts.append(f"{fmt_pct(dchg)} today")
-        if isinstance(wchg,(int,float)): parts.append(f"{fmt_pct(wchg)} this week")
-        if parts:
-            st.write(
-                f"**Summary:** {asset} {', '.join(parts)}; trend **{tstate}**, "
-                f"RSI **{bucket_rsi(rsi)}**, volatility **{bucket_vol(volp)}**."
-            )
-    else:
-        st.caption("No live snapshot found for this context.")
+    st.write(
+        f"**Summary:** {asset} {fmt_pct(dmove)} today, {fmt_pct(wmove)} this week; "
+        f"trend **{trend}**, RSI **{bucket_rsi(rsi)}**, vol **{bucket_vol(vol_pctile)}**."
+    )
 
 # ------------------------------------------------------------
 # Modes
