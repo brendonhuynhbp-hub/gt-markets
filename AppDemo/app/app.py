@@ -1,7 +1,52 @@
-# AppDemo/app/app.py
 from __future__ import annotations
 import re
+import json
 import ast
+import numpy as np
+
+def derive_labels(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Populate model_label / rule_label robustly from existing columns.
+    - If labels exist but are blank/NaN, recompute them.
+    - params may be dict, JSON string, or repr; try to parse.
+    - Prefer ta_label for Rule if available; else 'rule' or 'ta_label' inside params.
+    """
+    import pandas as pd, json, ast
+    def _to_dict(v):
+        if isinstance(v, dict):
+            return v
+        if isinstance(v, str):
+            for loader in (json.loads, ast.literal_eval):
+                try:
+                    d = loader(v)
+                    if isinstance(d, dict):
+                        return d
+                except Exception:
+                    pass
+        return {}
+    # Ensure label cols exist
+    if "model_label" not in df.columns:
+        df["model_label"] = pd.NA
+    if "rule_label" not in df.columns:
+        df["rule_label"] = pd.NA
+    need_model = df["model_label"].fillna("").eq("").any()
+    need_rule  = df["rule_label"].fillna("").eq("").any()
+    if need_model or need_rule:
+        p = df["params"] if "params" in df.columns else pd.Series([""]*len(df), index=df.index)
+        parsed = p.apply(_to_dict)
+        if need_model:
+            fill_model = parsed.apply(lambda d: str(d.get("model","")) if isinstance(d, dict) else "")
+            df.loc[df["model_label"].fillna("").eq(""), "model_label"] = fill_model
+        if need_rule:
+            if "ta_label" in df.columns:
+                ta_col = df["ta_label"].astype(str)
+                mask = df["rule_label"].fillna("").eq("") & ta_col.ne("")
+                df.loc[mask, "rule_label"] = ta_col
+            fallback = parsed.apply(lambda d: str(d.get("rule", d.get("ta_label",""))) if isinstance(d, dict) else "")
+            df.loc[df["rule_label"].fillna("").eq(""), "rule_label"] = fallback
+    for c in ["model_label","rule_label"]:
+        df[c] = df[c].replace("", pd.NA)
+    return df
 
 import json
 from pathlib import Path
@@ -356,7 +401,7 @@ def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, datas
     st.subheader("Strategy Insights")
 
     df = strategies.copy()
-    # Defensive: ensure required columns exist
+    # Required columns check
     for col in ["asset","freq","dataset","family","sharpe","max_dd","ann_return"]:
         if col not in df.columns:
             st.warning(f"Missing column '{col}' in strategies data.")
@@ -406,6 +451,7 @@ def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, datas
     def fmt_dec(x):
         return f"{x:.2f}" if pd.notna(x) else "-"
 
+    # Styling w/o hard matplotlib dependency
     has_mpl = True
     try:
         import matplotlib  # noqa: F401
@@ -552,54 +598,3 @@ if mode == "Simple":
 else:
     st.session_state["mode"] = "Advanced"
     advanced_mode(model_metrics, strategy_metrics, signals_map)
-
-
-def derive_labels(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Populate model_label / rule_label robustly from existing columns.
-    - If labels exist but are blank/NaN, recompute them.
-    - params may be dict, JSON string, or repr; try to parse.
-    - Prefer ta_label for Rule if available; else 'rule' or 'ta_label' inside params.
-    """
-    import pandas as pd
-    def _to_dict(v):
-        if isinstance(v, dict):
-            return v
-        if isinstance(v, str):
-            for loader in (json.loads, ast.literal_eval):
-                try:
-                    d = loader(v)
-                    if isinstance(d, dict):
-                        return d
-                except Exception:
-                    pass
-        return {}
-
-    # Ensure columns exist
-    if "model_label" not in df.columns:
-        df["model_label"] = pd.NA
-    if "rule_label" not in df.columns:
-        df["rule_label"] = pd.NA
-
-    need_model = df["model_label"].fillna("").eq("").any()
-    need_rule  = df["rule_label"].fillna("").eq("").any()
-
-    if need_model or need_rule:
-        p = df["params"] if "params" in df.columns else pd.Series([""]*len(df), index=df.index)
-        parsed = p.apply(_to_dict)
-        if need_model:
-            fill_model = parsed.apply(lambda d: str(d.get("model","")) if isinstance(d, dict) else "")
-            df.loc[df["model_label"].fillna("").eq(""), "model_label"] = fill_model
-        if need_rule:
-            # Prefer ta_label column if present & non-empty
-            if "ta_label" in df.columns:
-                ta_col = df["ta_label"].astype(str)
-                df.loc[df["rule_label"].fillna("").eq("") & ta_col.ne(""), "rule_label"] = ta_col
-            # Fallback to params dict keys
-            fallback = parsed.apply(lambda d: str(d.get("rule", d.get("ta_label",""))) if isinstance(d, dict) else "")
-            df.loc[df["rule_label"].fillna("").eq(""), "rule_label"] = fallback
-
-    # Final cleanup: replace still-empty with "-"
-    for c in ["model_label","rule_label"]:
-        df[c] = df[c].replace("", pd.NA)
-    return df
