@@ -4,6 +4,77 @@ import json
 import ast
 import numpy as np
 
+
+# ---------------------------- Context Helpers ----------------------------
+def _parse_params_to_dict(p):
+    import json, ast, pandas as pd
+    if p is None:
+        return {}
+    if isinstance(p, dict):
+        return p
+    if isinstance(p, str):
+        p = p.strip()
+        if not p:
+            return {}
+        for loader in (json.loads, ast.literal_eval):
+            try:
+                d = loader(p)
+                return d if isinstance(d, dict) else {}
+            except Exception:
+                continue
+    try:
+        import pandas as pd
+        if hasattr(pd, "isna") and pd.isna(p):
+            return {}
+    except Exception:
+        pass
+    return {}
+
+def _detect_indicator_family(rule_text:str, params:dict):
+    t = (rule_text or "").upper()
+    if "MACD" in t: return "MACD"
+    if "RSI" in t: return "RSI"
+    if "CROSS" in t or " MA " in t or "MOVING AVERAGE" in t: return "MA"
+    ind = str(params.get("ta") or params.get("indicator") or "").upper()
+    if "MACD" in ind: return "MACD"
+    if "RSI" in ind: return "RSI"
+    if "MA" in ind or "SMA" in ind or "EMA" in ind: return "MA"
+    return ""
+
+def _explain_setup(rule_text:str, params:dict):
+    fam = _detect_indicator_family(rule_text, params)
+    if fam == "MA":
+        fast = str(params.get("lo") or params.get("fast") or params.get("short") or "10")
+        slow = str(params.get("hi") or params.get("slow") or params.get("long") or "50")
+        return f"MA cross ({fast}/{slow})", "Short-term momentum crossing the long-term average. Bullish when fast > slow; bearish when fast < slow."
+    if fam == "RSI":
+        per = str(params.get("period") or params.get("window") or "14")
+        # try to surface threshold if present
+        th = ""
+        if params.get("hi"):
+            th = f" > {params['hi']}"
+        elif params.get("lo"):
+            th = f" < {params['lo']}"
+        return f"RSI({per}){th}", "Momentum oscillator. >70 often overbought (pullback risk); <30 oversold (bounce potential)."
+    if fam == "MACD":
+        w = str(params.get("window") or params.get("macd") or params.get("ta_window") or "12-26-9")
+        parts = w.replace(" ", "").replace("_","-").split("-")
+        label = f"MACD cross ({parts[0]}/{parts[1]}, {parts[2]})" if len(parts) >= 3 else "MACD cross (12/26, 9)"
+        return label, "Momentum turning point. Cross above signal is bullish, below is bearish."
+    rt = (rule_text or "").strip() or "Custom rule"
+    return rt, "Rule-based signal from the selected strategy."
+
+def _format_perf(sharpe, max_dd, ann_ret):
+    def _f2(x):
+        try: return f"{float(x):.2f}"
+        except Exception: return "-"
+    def _pct(x):
+        try: return f"{100*float(x):.1f}%"
+        except Exception: return "-"
+    return _f2(sharpe), _f2(max_dd), _pct(ann_ret)
+# -------------------------- End Context Helpers --------------------------
+
+
 # ======================= Helpers for Strategy Insights =======================
 def _params_to_dict(v):
     """Parse a params cell that may be a dict, JSON string, or Python-literal string."""
@@ -630,81 +701,65 @@ def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, datas
     st.download_button("Download filtered CSV", csv, file_name=f"strategies_{asset}_{freq}_{dataset}.csv", mime="text/csv")
 
 
-def context_tab(signals: Dict[str, Any], asset: str, freq: str, dataset_code: str):
-    # try to find a matching signal
-    target = None
-    for k, v in signals.items():
-        # support both compact keys and full records
-        a = v.get("asset") or (k.split("-")[0] if "-" in k else "")
-        f = v.get("freq")  or (k.split("-")[1] if "-" in k and len(k.split("-")) >= 2 else "")
-        d = (v.get("dataset") or (k.split("-")[2] if "-" in k and len(k.split("-")) >= 3 else "")).lower()
-        if a == asset and str(f).upper() == freq and d == dataset_code.lower():
-            target = v; break
+
+def context_tab(signals_map: dict, asset: str, freq: str, dataset: str, strategies: pd.DataFrame = None):
+    import pandas as pd
+    import streamlit as st
 
     st.subheader("Context")
-    if not target:
-        st.caption("No snapshot entry for this selection.")
-        return
-    st.markdown("#### Sentiment gauge")
-    st.caption("Index reflects model confidence / predicted return strength (0–100).")
-    st.plotly_chart(
-        gauge(target.get("index", 0), target.get("decision", "SELL"), f"{asset} · {freq} · {dataset_code.upper()}", True),
-        use_container_width=True
-    )
 
-# ------------------------------------------------------------
-# Modes
-# ------------------------------------------------------------
-def simple_mode():
-    st.title("What should I trade now?")
-    c1, c2, c3 = st.columns([1.1, 1, 1.3])
+    # 1) Signal snapshot from signals_map
+    snap = None
+    for k in (f"{asset}-{freq}", f"{asset}_{freq}", asset):
+        if isinstance(signals_map, dict) and k in signals_map:
+            snap = signals_map[k]; break
 
-    with c1:
-        min_strength = st.slider("Min strength", 0, 100, 50)
-    with c2:
-        show_gauges = st.toggle("Show gauges", value=True)
-    with c3:
-        st.caption("Click a card to drill into Advanced.")
+    signal_txt, conf_val, ts_txt = "-", None, "-"
+    if isinstance(snap, dict):
+        signal_txt = str(snap.get("signal") or snap.get("action") or "-").upper()
+        conf_val = snap.get("confidence") or snap.get("score") or None
+        ts_txt = str(snap.get("timestamp") or snap.get("time") or "-")
 
-    # build BUY/SELL lists
-    buy, sell = [], []
+    c1,c2,c3 = st.columns(3)
+    with c1: st.metric("Signal", signal_txt)
+    with c2: st.metric("Confidence", f"{conf_val:.0f}%" if isinstance(conf_val,(int,float)) else "-")
+    with c3: st.metric("As of", ts_txt)
 
-    # signals_map supports two formats:
-    #  1) compact demo keys like "BTC-W" or objects with no 'asset'
-    #  2) full records with 'asset','freq','dataset'
-    for k, s in signals_map.items():
-        asset = s.get("asset") or (k.split("-")[0] if "-" in k else str(k))
-        freq  = str(s.get("freq") or (k.split("-")[1] if "-" in k and len(k.split("-")) >= 2 else "W")).upper()
-        # normalize dataset; ignore custom ones like 'eng' in simple mode
-        dataset = str(s.get("dataset") or (k.split("-")[2] if "-" in k and len(k.split("-")) >= 3 else "ext")).lower()
-        if dataset not in {"base", "ext"}:
-            dataset = "ext"
+    # 2) Derive explanation from strategies (best Sharpe row)
+    expl_label, expl_why = None, None
+    sh, dd, ar = None, None, None
+    if isinstance(strategies, pd.DataFrame) and not strategies.empty:
+        df = strategies.copy()
+        for col, val in [("asset", asset), ("freq", freq), ("dataset", dataset)]:
+            if col in df.columns:
+                df = df[df[col] == val]
+        if "sharpe" in df.columns and not df.empty:
+            df = df.sort_values(by="sharpe", ascending=False)
+            row = df.iloc[0].to_dict()
+            params = _parse_params_to_dict(row.get("params"))
+            expl_label, expl_why = _explain_setup(str(row.get("rule") or row.get("Rule") or ""), params)
+            sh, dd, ar = row.get("sharpe"), row.get("max_dd"), row.get("ann_return")
 
-        s = {**s, "asset": asset, "freq": freq, "dataset": dataset}
+    # Fallback demo
+    if expl_label is None:
+        if signal_txt == "BUY":
+            expl_label, expl_why = "MA cross (10/50)", "Short-term momentum crossed above long-term; trend continuation likely."
+        elif signal_txt == "SELL":
+            expl_label, expl_why = "RSI(14) > 70", "Overbought conditions; risk of pullback."
+        else:
+            expl_label, expl_why = "MACD cross (12/26, 9)", "Momentum turning; watch for confirmation."
 
-        strength = clamp(s.get("index", 0))
-        if strength < min_strength:
-            continue
-        dec = (s.get("decision") or "").upper()
-        if dec == "BUY":
-            buy.append((asset, s))
-        elif dec == "SELL":
-            sell.append((asset, s))
+    st.markdown(f"**Setup:** {expl_label}")
+    st.caption(expl_why)
 
-    col_b, col_s = st.columns(2)
-    with col_b:
-        st.header("BUY")
-        if not buy:
-            st.caption("No BUY signals under current filters.")
-        for a, s in sorted(buy, key=lambda t: -clamp(t[1]["index"]))[:4]:
-            simple_card(a, s, show_gauge=show_gauges)
+    s, d, r = _format_perf(sh, dd, ar)
+    st.write("**Backtest context**")
+    c1,c2,c3 = st.columns(3)
+    with c1: st.metric("Sharpe", s)
+    with c2: st.metric("Max Drawdown", d)
+    with c3: st.metric("Annual Return", r)
 
-    with col_s:
-        st.header("SELL")
-        if not sell:
-            st.caption("No SELL signals under current filters.")
-        for a, s in sorted(sell, key=lambda t: -clamp(t[1]["index"]))[:4]:
-            simple_card(a, s, show_gauge=show_gauges)
+
 
 def advanced_mode(models: pd.DataFrame, strategies: pd.DataFrame, signals: Dict[str, Any]):
     st.title("Show me why")
