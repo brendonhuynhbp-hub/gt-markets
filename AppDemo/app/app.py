@@ -5,6 +5,24 @@ import ast
 import numpy as np
 
 # ======================= Helpers for Strategy Insights =======================
+
+def _model_friendly(name: str) -> str:
+    """Return a concise model label with target type."""
+    n = (name or "").strip()
+    base = n
+    target = ""
+    m = re.match(r'([A-Za-z0-9]+)[_\- ]?(cls|reg)?', n)
+    if m:
+        base = m.group(1).upper()
+        kind = (m.group(2) or "").lower()
+        if kind == "cls":
+            target = "Direction"
+        elif kind == "reg":
+            target = "Return"
+    # common expansions
+    aliases = {"XGB": "XGBoost", "RF": "Random Forest", "MLP": "MLP", "LSTM": "LSTM", "LR": "Logistic"}
+    pretty = aliases.get(base, base)
+    return f"{pretty} ({target})" if target else pretty
 def _params_to_dict(v):
     if isinstance(v, dict):
         return v
@@ -455,6 +473,8 @@ def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, datas
         df["params"] = None
     parts = df.apply(lambda r: split_rule_columns(str(r.get("Rule", ""))), axis=1)
     df["Indicator"], df["Window"] = zip(*parts)
+    df["Setup"] = df.apply(lambda r: (r["Indicator"].replace("Moving Average Crossover","MA cross") + (" (" + r["Window"].replace("-", "/") + ")" if str(r["Window"]) not in ["", "nan"] else "")), axis=1)
+    df["Model"] = df["Model"].apply(_model_friendly)
     df["Confidence Policy"] = df.apply(lambda r: thresholds_to_policy(str(r.get("Rule","")), r.get("params")), axis=1)
     families = sorted(df["Family"].dropna().unique().tolist())
     models   = sorted(df["Model"].dropna().unique().tolist())
@@ -470,29 +490,22 @@ def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, datas
     if q.strip():
         qre = re.compile(re.escape(q), re.I)
         mask = (
-            f["Indicator"].fillna("").str.contains(qre) |
-            f["Window"].fillna("").str.contains(qre) |
-            f["Confidence Policy"].fillna("").str.contains(qre) |
-            f["Rule"].fillna("").str.contains(qre)
+            f["Setup"].fillna("").str.contains(qre) | f["Model"].fillna("").str.contains(qre) | f["Confidence Policy"].fillna("").str.contains(qre) | f["Rule"].fillna("").str.contains(qre)
         )
         f = f[mask]
-    f = (f.drop_duplicates(subset=["Family","Model","Indicator","Window","Confidence Policy","Sharpe","Max DD","Annual Return"])
+    f = (f.drop_duplicates(subset=["Model","Setup","Confidence Policy","Sharpe","Max DD","Annual Return"])
            .reset_index(drop=True))
     asc = (sort_by == "Max DD")
     f = f.sort_values(by=[sort_by], ascending=asc)
     st.caption(f"Showing **{len(f):,}** strategies across **{f['Family'].nunique()}** family(ies).")
-    show = f[["Family","Model","Indicator","Window","Confidence Policy","Sharpe","Max DD","Annual Return"]].copy()
+    show = f[["Model","Setup","Confidence Policy","Sharpe","Max DD","Annual Return"]].copy()
     for col in ["Sharpe","Max DD","Annual Return"]:
         show[col] = pd.to_numeric(show[col], errors="coerce")
     def fmt_dec(x): return f"{x:.2f}" if pd.notna(x) else "-"
     styled = (show.style
         .format({"Sharpe": fmt_dec, "Max DD": fmt_dec, "Annual Return": fmt_dec})
         .apply(lambda s: ["color:#e74c3c" if (pd.notna(v) and v < 0) else "" for v in s] if s.name=="Max DD" else [""]*len(s))
-        .bar(subset=["Sharpe"], align="zero")
-    )
-    try:
-        import matplotlib
-        styled = styled.background_gradient(subset=["Annual Return"], cmap="Greens")
+        .bar(subset=["Model","Setup","Confidence Policy","Sharpe","Max DD","Annual Return"], cmap="Greens")
     except Exception:
         pass
     st.dataframe(styled, use_container_width=True, hide_index=True)
