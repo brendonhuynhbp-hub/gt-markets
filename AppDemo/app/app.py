@@ -756,7 +756,7 @@ def simple_mode():
     with c1:
         min_strength = st.slider("Min strength", 0, 100, 50)
     with c2:
-        show_gauges = st.toggle("Show gauges", value=True)
+        show_gauges = st.toggle("Show gauges", value=False)
     with c3:
         st.caption("Click a card to drill into Advanced.")
 
