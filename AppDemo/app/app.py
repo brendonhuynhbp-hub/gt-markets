@@ -132,6 +132,54 @@ def thresholds_to_policy(rule_text: str, params: dict | str | None) -> str:
     if hi >= 0.515:
         return "Moderate"
     return "Aggressive"
+
+def _infer_model_code(row: dict) -> str:
+    """
+    Infer canonical model code from row:
+      - Prefer params["model"] if available.
+      - Else parse family_id / family for tokens like XGB, RF, LSTM, GRU, MLP, LR and optional cls/reg.
+    Returns standardized codes like "XGB_cls", "RF_reg", etc., or empty string if unknown.
+    """
+    import re as _re, json as _json, ast as _ast
+
+    # 1) params.model
+    params = row.get("params")
+    if params:
+        if isinstance(params, dict):
+            m = params.get("model")
+            if m: return str(m)
+        elif isinstance(params, str):
+            for loader in (_json.loads, _ast.literal_eval):
+                try:
+                    d = loader(params)
+                    if isinstance(d, dict):
+                        m = d.get("model")
+                        if m: return str(m)
+                except Exception:
+                    pass
+
+    # 2) family_id or family
+    for key in ("family_id", "family"):
+        val = row.get(key)
+        if not isinstance(val, str):
+            continue
+        # Look for patterns like XGB_cls, RF-reg, LSTM, GRU, MLP, LR with optional suffix cls/reg
+        m = _re.search(r'\b(XGB|RF|LSTM|GRU|MLP|LR)\b[-_ ]?(cls|reg)?', val, flags=_re.I)
+        if m:
+            base = m.group(1).upper()
+            kind = (m.group(2) or "").lower()
+            if kind in ("cls","reg"):
+                return f"{base}_{kind}"
+            # if kind missing, try to infer from other hints in string
+            if _re.search(r'\breg(ress|ression)?\b', val, _re.I):
+                return f"{base}_reg"
+            if _re.search(r'\bcls(class|ification)?\b', val, _re.I):
+                return f"{base}_cls"
+            # default to classification if unknown
+            return f"{base}_cls"
+
+    return ""
+
 # ===================== End Helpers for Strategy Insights =====================
 
 import json
@@ -483,7 +531,7 @@ def keyword_explorer_tab(models: pd.DataFrame, asset: str, freq: str):
               .applymap(_uplift_color, subset=["Uplift"]))
     st.dataframe(styled, use_container_width=True)
 
-def strategy_insights_tab(strategies: pd.DataFrame, models: pd.DataFrame, asset: str, freq: str, dataset: str):
+def strategy_insights_tab(strategies: pd.DataFrame, asset: str, freq: str, dataset: str):
     st.subheader("Strategy Insights")
 
     df = strategies.copy()
@@ -498,6 +546,14 @@ def strategy_insights_tab(strategies: pd.DataFrame, models: pd.DataFrame, asset:
     df = derive_labels(df)
     df.rename(columns={"family":"Family","model_label":"Model","rule_label":"Rule",
                        "sharpe":"Sharpe","max_dd":"Max DD","ann_return":"Annual Return"}, inplace=True)
+
+    # Infer Model from params/family_id/family when missing
+    if "Model" not in df.columns or df["Model"].fillna("").eq("").all():
+        df["Model"] = df.apply(lambda r: _infer_model_code(r.to_dict()), axis=1)
+    # If partially missing, fill only blanks
+    mask_empty = df["Model"].fillna("").eq("")
+    if mask_empty.any():
+        df.loc[mask_empty, "Model"] = df[mask_empty].apply(lambda r: _infer_model_code(r.to_dict()), axis=1)
 
     if "params" not in df.columns:
         df["params"] = None
@@ -515,35 +571,15 @@ def strategy_insights_tab(strategies: pd.DataFrame, models: pd.DataFrame, asset:
     df["Model"] = df["Model"].apply(_model_friendly)
     df["Confidence Policy"] = df.apply(lambda r: thresholds_to_policy(str(r.get("Rule","")), r.get("params")), axis=1)
 
-    # Controls (counts-aware model picker)
-    # Friendly mapping for all model codes from model_metrics
-    all_model_codes = sorted(models["model"].dropna().astype(str).unique().tolist()) if "model" in models.columns else []
-    all_friendly = sorted({_model_friendly(m) for m in all_model_codes})
-
-    # Count strategies per friendly model for current filters
-    df_counts = df.copy()
-    df_counts["Model"] = df_counts["Model"].apply(_model_friendly)
-    counts = df_counts["Model"].value_counts().to_dict()
-
-    # Build available and missing lists
-    available = [m for m in all_friendly if counts.get(m, 0) > 0]
-    missing = [m for m in all_friendly if counts.get(m, 0) == 0]
-
-    include_missing = st.checkbox("Include models with no strategies", value=False)
-    options = available + (missing if include_missing else [])
-
+    # Controls (models inferred from strategies only, so the list always matches available data)
+    df["Model"] = df["Model"].apply(_model_friendly)
+    options = sorted(df["Model"].dropna().unique().tolist())
     c1,c2 = st.columns([1.3,1.3])
     with c1:
-        default_sel = available if available else options
-        sel_mod = st.multiselect("Model", options, default=default_sel)
+        sel_mod = st.multiselect("Model", options, default=options)
     with c2:
         sort_by = st.selectbox("Sort by", ["Sharpe","Annual Return","Max DD"], index=0)
-
     q = st.text_input("Search (Setup / Model / Policy)", "")
-
-    # Small hint if empty
-    if not available:
-        st.caption("No strategies found for the current filters. Try a different Asset/Frequency/Dataset or include models with no strategies.")
 
     # Filter
     f = df[df["Model"].isin(sel_mod)].copy()
@@ -699,7 +735,7 @@ def advanced_mode(models: pd.DataFrame, strategies: pd.DataFrame, signals: Dict[
     with tabs[1]:
         keyword_explorer_tab(models, asset, freq)
     with tabs[2]:
-        strategy_insights_tab(strategies, models, asset, freq, dataset_code)
+        strategy_insights_tab(strategies, asset, freq, dataset_code)
     with tabs[3]:
         context_tab(signals, asset, freq, dataset_code)
 
