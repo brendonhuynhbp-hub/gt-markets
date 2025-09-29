@@ -79,7 +79,7 @@ def _model_friendly(name) -> str:
             target = "Direction"
         elif kind == "reg":
             target = "Return"
-    aliases = {"XGB": "XGBoost", "RF": "Random Forest", "MLP": "MLP", "LSTM": "LSTM", "LR": "Logistic"}
+    aliases = {"XGB": "XGB", "RF": "RF", "MLP": "MLP", "LSTM": "LSTM", "LR": "Logistic"}
     pretty = aliases.get(base, base) if base else ""
     return f"{pretty} ({target})" if (pretty and target) else (pretty or "-")
 
