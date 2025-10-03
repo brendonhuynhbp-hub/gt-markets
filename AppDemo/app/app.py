@@ -194,21 +194,31 @@ import streamlit as st
 # ------------------------------------------------------------
 # Config
 # ------------------------------------------------------------
+# You can override the data location with APPDEMO_DATA_DIR=/abs/path/to/AppDemo/data
+DATA_DIR_OVERRIDE = os.getenv("APPDEMO_DATA_DIR")
+
 DATA_DIRS = [
-    Path(__file__).resolve().parent.parent / "data",  # AppDemo/data relative to this file
-    Path("AppDemo/data"),                              # when running from repo root
-    Path("./data"),                                    # fallback
+    Path(DATA_DIR_OVERRIDE) if DATA_DIR_OVERRIDE else None,          # explicit override
+    Path.cwd() / "AppDemo" / "data",                                 # repo root
+    Path.cwd() / "data",                                             # local ./data
+    Path(__file__).resolve().parent / "data",                        # next to app.py
+    Path(__file__).resolve().parent.parent / "data",                 # AppDemo/data (original)
 ]
+# keep only existing, non-empty entries
+DATA_DIRS = [p for p in DATA_DIRS if p]
+
 
 # ------------------------------------------------------------
 # Helpers: safe file discovery & data loading
 # ------------------------------------------------------------
 def _find_data_file(fname: str) -> Path:
+    tried = []
     for d in DATA_DIRS:
         p = d / fname
+        tried.append(str(p))
         if p.exists():
             return p
-    raise FileNotFoundError(f"Could not find {fname} in any of {DATA_DIRS}")
+    raise FileNotFoundError(f"Could not find {fname}. Tried: {tried}")
 
 @st.cache_data(show_spinner=False)
 def load_all() -> tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
