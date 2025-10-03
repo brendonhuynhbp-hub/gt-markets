@@ -212,38 +212,53 @@ def _find_data_file(fname: str) -> Path:
 
 @st.cache_data(show_spinner=False)
 def load_all() -> tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
-    # model & strategy metrics
     mm = pd.read_csv(_find_data_file("model_metrics.csv"))
     sm = pd.read_csv(_find_data_file("strategy_metrics.csv"))
 
-    # normalize headers
     mm.columns = mm.columns.str.strip().str.lower()
     sm.columns = sm.columns.str.strip().str.lower()
 
-    # prefer demo signals if available
-    try:
-        sig_path = _find_data_file("signals_demo.json")
-    except FileNotFoundError:
-        sig_path = _find_data_file("signals_snapshot.json")
+    # 🔧 NORMALIZE VALUES so filters always match
+    for col in ["asset", "freq", "dataset", "model", "task"]:
+        if col in mm.columns:
+            mm[col] = mm[col].astype(str)
 
-    with open(sig_path, "r") as f:
-        sig = json.load(f)
+    for col in ["asset", "freq", "dataset", "family"]:
+        if col in sm.columns:
+            sm[col] = sm[col].astype(str)
 
-    # light cleanup
+    # freq: D/W
+    if "freq" in mm: mm["freq"] = mm["freq"].str.upper()
+    if "freq" in sm: sm["freq"] = sm["freq"].str.upper()
+
+    # dataset: map eng → ext (Market + Keywords)
+    ds_map = {"base": "base", "ext": "ext", "eng": "ext", "keyword": "ext"}
+    if "dataset" in mm: mm["dataset"] = mm["dataset"].str.lower().map(ds_map).fillna("base")
+    if "dataset" in sm: sm["dataset"] = sm["dataset"].str.lower().map(ds_map).fillna("base")
+
+    # task: map to CLS / REG
+    task_map = {
+        "cls": "CLS", "classification": "CLS",
+        "reg": "REG", "regression": "REG"
+    }
+    if "task" in mm: mm["task"] = mm["task"].str.lower().map(task_map).fillna(mm["task"].str.upper())
+
+    # rename a couple columns if needed
     if "acc" in mm.columns and "accuracy" not in mm.columns:
         mm = mm.rename(columns={"acc": "accuracy"})
     if "maxdd" in sm.columns and "max_dd" not in sm.columns:
         sm = sm.rename(columns={"maxdd": "max_dd"})
 
-    # force canonical dtypes where sensible
-    for col in ["asset", "freq", "dataset", "model", "task"]:
-        if col in mm.columns:
-            mm[col] = mm[col].astype(str)
-    for col in ["asset", "freq", "dataset", "family"]:
-        if col in sm.columns:
-            sm[col] = sm[col].astype(str)
+    # pick signals file (demo or snapshot)
+    try:
+        sig_path = _find_data_file("signals_demo.json")
+    except FileNotFoundError:
+        sig_path = _find_data_file("signals_snapshot.json")
+    with open(sig_path, "r") as f:
+        sig = json.load(f)
 
     return mm, sm, sig
+
 
 model_metrics, strategy_metrics, signals_map = load_all()
 
