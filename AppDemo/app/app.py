@@ -3,6 +3,8 @@ import re
 import json
 import ast
 import numpy as np
+import os
+
 
 # ======================= Helpers for Strategy Insights =======================
 def _params_to_dict(v):
